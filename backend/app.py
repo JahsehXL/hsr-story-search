@@ -65,7 +65,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
     session_lock = threading.RLock()
     rates = defaultdict(deque)
     rate_lock = threading.Lock()
-    search_slots = threading.BoundedSemaphore(2)
+    search_slots = threading.BoundedSemaphore(8)
     upload_lock = threading.Lock()
     cookie_path = os.environ.get("HSR_PUBLIC_PREFIX", "/")
     if not cookie_path.startswith("/") or not cookie_path.endswith("/"):
@@ -254,10 +254,10 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
     @app.post("/api/v1/search")
     def search(payload: SearchRequest, user=Depends(authenticated)):
         limited("search:" + user["id"], runtime.settings.value["limits"]["search_per_minute"])
-        if not search_slots.acquire(blocking=False):
-            raise HTTPException(429, "当前搜索繁忙，请稍后重试")
+        start = time.monotonic()
+        if not search_slots.acquire(timeout=5.0):
+            raise HTTPException(429, "搜索排队等待超时，请稍后重试", headers={"Retry-After": "2"})
         try:
-            start = time.monotonic()
             query = payload.query.strip()
             if not query:
                 raise ValueError("请输入搜索内容")
@@ -311,6 +311,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
 
     @app.put("/api/v1/admin/settings")
     def save_settings(payload: dict, user=Depends(administrator)):
+        runtime.upgrade_embedding_state()
         return runtime.settings.update(payload)
 
     @app.post("/api/v1/admin/embedding/test")

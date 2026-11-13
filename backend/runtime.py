@@ -25,7 +25,7 @@ import httpx
 import sqlite_vec
 
 from .embeddings import embed
-from .settings import Settings, atomic_json, embedding_signature
+from .settings import Settings, atomic_json, embedding_identity, embedding_signature, legacy_embedding_signature
 from .version_metadata import apply_versions
 
 
@@ -152,6 +152,38 @@ class Runtime:
         self.usage_path = self.root / "api-usage.json"
         self.usage = json.loads(self.usage_path.read_text(encoding="utf-8")) if self.usage_path.exists() else {}
         self._save_jobs()
+        self.upgrade_embedding_state()
+
+    def _upgrade_embedding_metadata(self, connection: sqlite3.Connection) -> bool:
+        row = connection.execute("SELECT value FROM info WHERE key='embedding'").fetchone()
+        if not row:
+            return False
+        metadata = json.loads(row[0])
+        dimension = int(metadata.get("dimension", 0))
+        config = self.settings.public()
+        if metadata.get("signature_version", 1) != 1 or metadata.get("signature") != legacy_embedding_signature(config, dimension):
+            return False
+        metadata.update(signature=embedding_signature(config, dimension), signature_version=2, identity=embedding_identity(config, dimension), request_dimensions=int(config["embedding"].get("dimensions", 0)))
+        connection.execute("UPDATE info SET value=? WHERE key='embedding'", (json.dumps(metadata),))
+        return True
+
+    def upgrade_embedding_state(self) -> None:
+        """Recognize legacy signatures using their original settings before dropping the endpoint."""
+        with self.lock:
+            path, _ = self.active_path()
+            if path:
+                metadata = read_info(path, "embedding", {})
+                dimension = int(metadata.get("dimension", 0))
+                if metadata and metadata.get("signature_version", 1) == 1 and metadata.get("signature") == legacy_embedding_signature(self.settings.public(), dimension):
+                    self.install_snapshot(path, "portable-vector-signature")
+            cache_path = self.root / "vector-cache.db"
+            if cache_path.exists():
+                config = self.settings.public()
+                dimension = int(config["embedding"].get("dimensions", 0))
+                with connect(cache_path) as connection:
+                    table = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors'").fetchone()
+                    if table:
+                        connection.execute("INSERT OR IGNORE INTO vectors(namespace,hash,vector,dimension) SELECT ?,hash,vector,dimension FROM vectors WHERE namespace=?", (embedding_signature(config, dimension), legacy_embedding_signature(config, dimension)))
 
     def active_path(self, snapshot: str | None = None) -> tuple[Path | None, str]:
         with self.lock:
@@ -175,6 +207,7 @@ class Runtime:
             directory.mkdir()
             shutil.copy2(database, directory / "story.db")
             with connect(directory / "story.db") as connection:
+                self._upgrade_embedding_metadata(connection)
                 apply_versions(connection)
             overlay_path = self.root / "mission-overrides.json"
             if overlay_path.exists():
@@ -219,6 +252,10 @@ class Runtime:
                 chunks = connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
                 if not 1 <= dimension <= 32768 or metadata.get("count") != chunks or not re.fullmatch(r"[a-f0-9]{64}", str(metadata.get("signature", ""))):
                     raise ValueError("向量索引元数据与剧情数据不一致")
+                if metadata.get("signature_version") == 2:
+                    identity = metadata.get("identity")
+                    if not isinstance(identity, dict) or identity.get("preprocessing") != "hsr-chunks-v1" or identity.get("dimension") != dimension or identity.get("model") != metadata.get("model") or embedding_signature(identity, dimension) != metadata["signature"]:
+                        raise ValueError("共享索引的模型参数与向量签名不一致")
                 if "chunk_vectors" not in tables or connection.execute("SELECT COUNT(*) FROM chunk_vectors").fetchone()[0] != chunks:
                     raise ValueError("向量索引条数与剧情数据不一致")
 
@@ -245,7 +282,7 @@ class Runtime:
         if path:
             with connect(path) as connection:
                 total = connection.execute("SELECT COUNT(*) FROM chunks WHERE script!='unlinked' AND mission_id!='unlinked'").fetchone()[0]
-        return {"ready": bool(compatible and self.settings.key() and meta.get("count", 0) == total), "compatible": compatible, "model": config["embedding"]["model"], "dimension": dimension or configured_dimension, "indexed": meta.get("count", 0), "total": total}
+        return {"ready": bool(compatible and self.settings.key() and meta.get("count", 0) == total), "compatible": compatible, "model": config["embedding"]["model"], "dimension": dimension or configured_dimension, "indexed": meta.get("count", 0), "total": total, "index_model": meta.get("model", ""), "index_identity": meta.get("identity", {}), "index_request_dimensions": meta.get("request_dimensions", dimension)}
 
     def consume_api(self) -> None:
         with self.lock:
@@ -346,6 +383,47 @@ class Runtime:
                 if expected_size and done != expected_size:
                     raise ValueError("下载文件大小与清单不符")
 
+    def _source_commit(self, repository: str, mirror: str, job: dict) -> str:
+        official = f"https://api.github.com/repos/{repository}/commits/HEAD"
+        urls = [official, mirror + "/" + official] if mirror else [official]
+        failure = None
+        for url in urls:
+            self._checkpoint(job)
+            try:
+                with httpx.Client(timeout=20 if mirror else 60, follow_redirects=False, trust_env=False, headers={"Accept": "application/vnd.github.sha"}) as client:
+                    with public_https_stream(client, url) as response:
+                        body = bytearray()
+                        for block in response.iter_bytes(65536):
+                            self._checkpoint(job)
+                            body.extend(block)
+                            if len(body) > 1024**2:
+                                raise ValueError("GitHub 提交信息超过 1 MiB")
+                        text = body.decode("utf-8").strip()
+                        commit = text if re.fullmatch(r"[a-fA-F0-9]{40}", text) else json.loads(body)["sha"]
+                if not isinstance(commit, str) or not re.fullmatch(r"[a-fA-F0-9]{40}", commit):
+                    raise ValueError("GitHub 返回了无效的提交号")
+                return commit.lower()
+            except (httpx.HTTPError, ValueError, KeyError, TypeError, OSError) as exc:
+                failure = exc
+        raise ValueError("无法确定 GitHub 仓库提交号，请检查直连网络或镜像的 API 转发能力") from failure
+
+    def _download_source(self, repository: str, commit: str, mirror: str, archive: Path, job: dict) -> None:
+        official = f"https://codeload.github.com/{repository}/zip/{commit}"
+        urls = [mirror + f"/https://github.com/{repository}/archive/{commit}.zip", official] if mirror else [official]
+        failure = None
+        for index, url in enumerate(urls):
+            self._checkpoint(job)
+            if index:
+                self._progress(job, {"phase": "download", "done": 0, "total": 0, "message": "镜像下载失败，正在尝试 GitHub 直连"})
+            try:
+                self._download(url, archive, job)
+                if not zipfile.is_zipfile(archive):
+                    raise ValueError("快照下载结果不是 ZIP 文件")
+                return
+            except (httpx.HTTPError, ValueError, OSError) as exc:
+                failure = exc
+        raise ValueError("无法下载社区快照，请检查直连网络或 GitHub 镜像地址") from failure
+
     def _run_job(self, job: dict):
         try:
             job.update(status="paused" if self.controls[job["id"]]["pause"].is_set() else "running", error="")
@@ -383,12 +461,10 @@ class Runtime:
             else:
                 if kind == "download_source":
                     repo = self.settings.value["updates"]["repository"]
-                    with httpx.Client(timeout=60, follow_redirects=True, trust_env=False) as client:
-                        response = client.get(f"https://api.github.com/repos/{repo}/commits/HEAD", headers={"User-Agent": "HSR-Story-Search/0.1"})
-                        response.raise_for_status()
-                        commit = response.json()["sha"]
+                    mirror = self.settings.value["updates"]["github_mirror"]
+                    commit = self._source_commit(repo, mirror, job)
                     archive = work / "source.zip"
-                    self._download(f"https://codeload.github.com/{repo}/zip/{commit}", archive, job)
+                    self._download_source(repo, commit, mirror, archive, job)
                     source = work / "source"
                     safe_extract(archive, source)
                     candidates = [path.parent for path in source.glob("*/TextMap") if path.is_dir()]
@@ -449,6 +525,14 @@ class Runtime:
             total = len(rows)
             if not total:
                 raise ValueError("没有可建立向量索引的剧情片段")
+            metadata = read_info(path, "embedding", {})
+            previous_dimension = int(metadata.get("dimension", 0))
+            configured_dimension = int(config["embedding"].get("dimensions", 0))
+            if metadata and (not configured_dimension or configured_dimension == previous_dimension) and metadata.get("signature") == embedding_signature(config, previous_dimension):
+                for row in connection.execute("SELECT c.content_hash,v.embedding FROM chunks c JOIN chunk_vectors v ON v.chunk_id=c.id WHERE c.script!='unlinked' AND c.mission_id!='unlinked'"):
+                    self._checkpoint(job)
+                    cache.execute("INSERT OR IGNORE INTO vectors(namespace,hash,vector,dimension) VALUES(?,?,?,?)", (namespace, row[0], row[1], previous_dimension))
+                cache.commit()
             connection.execute("DROP TABLE IF EXISTS chunk_vectors")
             connection.commit()
             dimension = 0
@@ -492,7 +576,7 @@ class Runtime:
                 completed += len(batch)
                 connection.commit()
                 self._progress(job, {"phase": "embedding", "done": completed, "total": total, "message": f"已处理 {completed}/{total} 个片段，复用缓存 {cached_count}"})
-            metadata = {"model": config["embedding"]["model"], "dimension": dimension, "signature": embedding_signature(config, dimension), "count": total, "created_at": now()}
+            metadata = {"model": config["embedding"]["model"], "dimension": dimension, "signature": embedding_signature(config, dimension), "signature_version": 2, "identity": embedding_identity(config, dimension), "request_dimensions": int(config["embedding"].get("dimensions", 0)), "count": total, "created_at": now()}
             connection.execute("INSERT OR REPLACE INTO info(key,value) VALUES('embedding',?)", (json.dumps(metadata),))
             connection.commit()
 
@@ -551,6 +635,7 @@ class Runtime:
 
     def export_package(self) -> Path:
         with self.lock:
+            self.upgrade_embedding_state()
             return self._export_package()
 
     def _export_package(self) -> Path:

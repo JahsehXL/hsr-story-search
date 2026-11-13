@@ -11,8 +11,18 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 DEFAULTS = {
-    "embedding": {"base_url": "", "model": "", "dimensions": 0, "query_prefix": "", "document_prefix": "", "extra_body": {}, "batch_size": 16, "concurrency": 1, "timeout": 60},
-    "updates": {"repository": "DimbreathBot/TurnBasedGameData", "manifest_url": ""},
+    "embedding": {
+        "base_url": "https://api.siliconflow.cn/v1",
+        "model": "BAAI/bge-m3",
+        "dimensions": 0,
+        "query_prefix": "",
+        "document_prefix": "",
+        "extra_body": {},
+        "batch_size": 32,
+        "concurrency": 1,
+        "timeout": 60,
+    },
+    "updates": {"repository": "DimbreathBot/TurnBasedGameData", "manifest_url": "", "github_mirror": ""},
     "limits": {"search_per_minute": 30, "daily_api_calls": 0},
 }
 
@@ -59,6 +69,12 @@ class Settings:
             saved = json.loads(self.path.read_text(encoding="utf-8"))
             for section in DEFAULTS:
                 self.value[section].update(saved.get(section, {}))
+            previous = saved.get("embedding", {})
+            if not previous.get("base_url") and not previous.get("model"):
+                for field in ("base_url", "model", "dimensions", "query_prefix", "document_prefix"):
+                    self.value["embedding"][field] = DEFAULTS["embedding"][field]
+                if previous.get("batch_size", 16) == 16:
+                    self.value["embedding"]["batch_size"] = DEFAULTS["embedding"]["batch_size"]
 
     def key(self) -> str:
         if self.secret_path.exists():
@@ -69,6 +85,7 @@ class Settings:
         with self.lock:
             result = copy.deepcopy(self.value)
         result["embedding"]["api_key_set"] = bool(self.key())
+        result["recommended_embedding"] = copy.deepcopy(DEFAULTS["embedding"])
         return result
 
     def update(self, incoming: dict) -> dict:
@@ -116,6 +133,12 @@ class Settings:
             if manifest_url and not manifest_url.startswith("https://"):
                 raise ValueError("更新清单地址必须使用 HTTPS")
             value["updates"]["manifest_url"] = manifest_url
+            mirror = str(value["updates"]["github_mirror"]).strip().rstrip("/")
+            if mirror:
+                parsed = urlsplit(mirror)
+                if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+                    raise ValueError("GitHub 镜像应为不含凭据、查询参数的 HTTPS 前缀地址")
+            value["updates"]["github_mirror"] = mirror
             key = incoming.get("embedding", {}).get("api_key", "")
             if key:
                 self.secret_path.write_bytes(protect(str(key).strip().encode("utf-8")))
@@ -125,7 +148,37 @@ class Settings:
         return self.public()
 
 
+def public_embedding_parameters(value):
+    """Keep model parameters portable while leaving authentication with each deployment."""
+    credentials = {
+        "apikey", "xapikey", "apitoken", "accesstoken", "refreshtoken", "idtoken",
+        "authorization", "authentication", "password", "secret", "token", "key",
+        "clientsecret", "clientkey", "secretkey", "privatekey", "bearer", "bearertoken",
+        "credential", "credentials", "auth", "headers", "user", "userid", "username",
+        "account", "accountid",
+    }
+    if isinstance(value, dict):
+        return {key: public_embedding_parameters(child) for key, child in value.items()
+                if "".join(character for character in str(key).lower() if character.isalnum()) not in credentials}
+    if isinstance(value, list):
+        return [public_embedding_parameters(child) for child in value]
+    return value
+
+
+def embedding_identity(settings: dict, dimension: int) -> dict:
+    embedding = settings.get("embedding", settings)
+    identity = {key: embedding.get(key) for key in ("model", "query_prefix", "document_prefix", "extra_body")}
+    identity["extra_body"] = public_embedding_parameters(identity["extra_body"])
+    identity.update(dimension=dimension, preprocessing="hsr-chunks-v1")
+    return identity
+
+
 def embedding_signature(settings: dict, dimension: int) -> str:
+    identity = embedding_identity(settings, dimension)
+    return hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def legacy_embedding_signature(settings: dict, dimension: int) -> str:
     embedding = settings.get("embedding", settings)
     identity = {key: embedding.get(key) for key in ("base_url", "model", "query_prefix", "document_prefix", "extra_body")}
     identity.update(dimension=dimension, preprocessing="hsr-chunks-v1")

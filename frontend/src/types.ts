@@ -4,7 +4,7 @@ export interface Status {
   admin: boolean;
   version: string;
   data: { ready: boolean; snapshot: string; stats: Record<string, number | string> };
-  embedding: { ready: boolean; compatible: boolean; model: string; dimension: number; indexed: number; total: number };
+  embedding: { ready: boolean; compatible: boolean; model: string; dimension: number; indexed: number; total: number; index_model?: string; index_request_dimensions?: number; index_identity?: { model: string; dimension: number; query_prefix: string; document_prefix: string; extra_body: Record<string, unknown> } };
   jobs?: Job[];
 }
 
@@ -83,6 +83,7 @@ export interface Job {
   created_at?: string;
 }
 export interface Settings {
+  recommended_embedding?: Omit<Settings['embedding'], 'api_key_set'>;
   embedding: {
     base_url: string;
     model: string;
@@ -95,7 +96,7 @@ export interface Settings {
     timeout: number;
     api_key_set: boolean;
   };
-  updates: { repository: string; manifest_url: string };
+  updates: { repository: string; manifest_url: string; github_mirror: string };
   limits: { search_per_minute: number; daily_api_calls: number };
 }
 export interface Bookmark { key: string; result: Result; query: string; saved_at: string; snapshot?: string }
