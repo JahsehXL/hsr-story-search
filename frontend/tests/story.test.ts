@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStoryModel, focusStory, resolveStory, shareStoryAnchor, windowStoryGroup } from '../src/story.ts';
+import { buildStoryModel, focusStory, resolveStory, shareStoryAnchor, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
 import type { DialogueLine } from '../src/types.ts';
 
 function line(id: string, sequence: number, branch: string, values: Partial<DialogueLine> = {}): DialogueLine {
@@ -162,4 +162,15 @@ test('sharing a visible follow-up preserves its precise hit', () => {
   const focus = focusStory(model, 'follow-a');
   const lines = resolveStory(model, focus).groups.flatMap(group => group.lines);
   assert.equal(shareStoryAnchor(lines, focus.selections, 'follow-a')?.id, 'follow-a');
+});
+
+test('withDefaultChoices auto-selects the first option while preserving explicit hits', () => {
+  const model = buildStoryModel(fixture());
+  const introFocus = withDefaultChoices(model, focusStory(model, 'intro'));
+  assert.equal(introFocus.selections['answer-a'], 'answer-a');
+  assert.deepEqual(resolveStory(model, introFocus).groups.map(group => group.sequence), [0, 1]);
+
+  const hitB = withDefaultChoices(model, focusStory(model, 'follow-b'));
+  assert.equal(hitB.selections['answer-a'], 'answer-b');
+  assert.deepEqual(resolveStory(model, hitB).groups.map(group => group.sequence), [0, 2]);
 });

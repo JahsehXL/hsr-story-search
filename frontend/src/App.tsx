@@ -47,7 +47,7 @@ function formatNumber(value: number | string | undefined) { return typeof value 
 
 function matchLabel(result: Result) {
   if (result.matched_field === 'mission') return '任务名称匹配';
-  if (result.matched_field === 'speaker') return '说话人匹配';
+  if (result.matched_field === 'speaker') return '角色匹配';
   if (result.matched_field === 'metadata') return '剧情出处匹配';
   return labels[result.match_type] || '相关对白';
 }
@@ -308,34 +308,51 @@ export default function App() {
       <div className="header-actions"><span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button><button className="icon-button" onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} title="切换主题">{theme === 'dark' ? '☼' : '☾'}</button><button className="header-button" aria-label="管理档案" title="管理" onClick={() => status.admin ? setShowSettings(true) : setShowAdminLogin(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>{status.mode === 'server' && (!status.public_readonly || status.admin) && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
     </header>
     <section className="search-section">
-      <div className="search-heading"><h1>查找剧情，回到故事发生的地方</h1><span>{formatNumber(status.data.stats?.narrative_lines ?? status.data.stats?.lines)} 条剧情对白</span></div>
-      <form className="search-form" onSubmit={e => { e.preventDefault(); void runSearch(query); }}><span className="search-symbol" aria-hidden="true">⌕</span><input ref={searchInput} value={query} onChange={e => setQuery(e.target.value)} placeholder={mode === 'hybrid' ? '描述你记得的人物、事件或情节…' : mode === 'fuzzy' ? '输入记得的大致文字，尝试近似匹配…' : '输入台词、任务名或说话人…'} aria-label="搜索剧情" maxLength={1000} /><kbd>Ctrl K</kbd><button className="primary search-submit" disabled={searching || !query.trim()}>{searching ? <span className="spinner" /> : '搜索'}<span aria-hidden="true">↗</span></button></form>
-      <div className="search-options"><div className="filter-row"><SelectField label="世界" value={filters.world} values={catalog.worlds} onChange={v => setFilters(old => ({ ...old, world: v }))} /><SelectField label="版本" value={filters.version} values={[...catalog.versions.filter(value => value !== "unknown"), "unknown"]} onChange={v => setFilters(old => ({ ...old, version: v }))} /><SelectField label="任务类型" value={filters.type} values={catalog.types} onChange={v => setFilters(old => ({ ...old, type: v }))} /><label className={`filter character-filter ${filters.character ? 'has-value' : ''}`}><span>说话人</span><input value={filters.character} onChange={e => setFilters(old => ({ ...old, character: e.target.value }))} list="character-list" placeholder="全部" aria-label="说话人筛选" /><datalist id="character-list">{catalog.characters.map(name => <option key={name} value={name} />)}</datalist></label>{Object.values(filters).some(Boolean) && <button className="text-button clear-filters" onClick={() => setFilters(emptyFilters)}>重置筛选</button>}</div>
-      </div>
-      <div className="search-methods">
-        <div className="mode-tabs" role="group" aria-label="搜索方式">
-          <button type="button" aria-pressed={mode === 'text'} onClick={() => chooseMode('text')}>关键词</button>
-          <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={indexReady(status.embedding) ? '按情节描述搜索' : '管理员建立完整语义索引后可用'} onClick={() => chooseMode('hybrid')}>情节描述</button>
-          <button type="button" aria-pressed={mode === 'fuzzy'} onClick={() => chooseMode('fuzzy')}>近似文字</button>
+      <form className="search-form" onSubmit={e => { e.preventDefault(); void runSearch(query); }}>
+        <span className="search-symbol" aria-hidden="true">⌕</span>
+        <input ref={searchInput} value={query} onChange={e => setQuery(e.target.value)} placeholder={mode === 'hybrid' ? '描述你记得的人物、事件或情节…' : mode === 'fuzzy' ? '输入记得的大致文字，尝试近似匹配…' : '输入台词、任务名或角色（支持空格分词与角色别名）…'} aria-label="搜索剧情" maxLength={1000} />
+        {query && <button type="button" className="icon-button clear-query" onClick={() => { setQuery(''); searchInput.current?.focus(); }} aria-label="清空输入" title="清空">×</button>}
+        <kbd>Ctrl K</kbd>
+        <button className="primary search-submit" disabled={searching || !query.trim()}>{searching ? <span className="spinner" /> : '搜索'}<span aria-hidden="true">↗</span></button>
+      </form>
+      <div className="search-toolbar">
+        <div className="search-methods">
+          <div className="mode-tabs" role="group" aria-label="搜索方式">
+            <button type="button" aria-pressed={mode === 'text'} onClick={() => chooseMode('text')}>关键词</button>
+            <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={indexReady(status.embedding) ? '按情节描述搜索' : '管理员建立完整语义索引后可用'} onClick={() => chooseMode('hybrid')}>情节描述</button>
+            <button type="button" aria-pressed={mode === 'fuzzy'} onClick={() => chooseMode('fuzzy')}>近似文字</button>
+          </div>
+          <button type="button" className="text-button semantic-key-link" onClick={() => setShowVisitorKey(true)}>🔑 语义密钥{visitorKey && <span>已配置</span>}</button>
         </div>
-        <p className="mode-description" role="status">{mode === 'text' ? '准确查找原文、任务和人物' : mode === 'fuzzy' ? '容忍部分错字，相关程度可能降低' : indexReady(status.embedding) ? visitorKey ? '使用浏览器中的个人密钥' : serverKeyReady(status.embedding) ? '使用本站提供的语义接口' : '配置个人密钥后可按情节搜索' : '完整语义索引建立后可用'}</p>
-        <button className="text-button semantic-key-link" onClick={() => setShowVisitorKey(true)}>配置语义搜索密钥{visitorKey && <span>已保存</span>}</button>
+        <div className="search-options">
+          <div className="filter-row">
+            <SelectField label="世界" value={filters.world} values={catalog.worlds} onChange={v => setFilters(old => ({ ...old, world: v }))} />
+            <SelectField label="版本" value={filters.version} values={[...catalog.versions.filter(value => value !== "unknown"), "unknown"]} onChange={v => setFilters(old => ({ ...old, version: v }))} />
+            <SelectField label="任务类型" value={filters.type} values={catalog.types} onChange={v => setFilters(old => ({ ...old, type: v }))} />
+            <label className={`filter character-filter ${filters.character ? 'has-value' : ''}`}><span>角色</span><input value={filters.character} onChange={e => setFilters(old => ({ ...old, character: e.target.value }))} list="character-list" placeholder="全部角色" aria-label="角色筛选" /><datalist id="character-list">{catalog.characters.map(name => <option key={name} value={name} />)}</datalist></label>
+            {Object.values(filters).some(Boolean) && <button type="button" className="text-button clear-filters" onClick={() => setFilters(emptyFilters)}>重置筛选</button>}
+          </div>
+        </div>
       </div>
-      <details className="search-help"><summary>搜索方式说明</summary><div>
-        <p><strong>记得原话</strong> 输入整句或几个连续的字，优先查找原文。任务名和说话人也可搜索，结果会标明匹配来源。</p>
-        <p><strong>只记得大概</strong> 选择“情节描述”按情节查找，需要已就绪的语义索引。“近似文字”单独容忍错字，关键词模式只检索实际匹配的文字。</p>
-        <p><strong>筛选与版本</strong> 筛选条件会同时生效，调整后点击搜索。版本指该任务首次开放的版本，未确认的记录可选“版本待核实”。</p>
-        <p><strong>语义模型</strong> 查询与索引须使用同一个模型及配置。更换模型需要重建索引，相关程度和排序会随模型变化。</p>
-      </div></details>
     </section>
     <main className="workspace"><section className="results-panel" aria-label="搜索结果"><div className="results-heading"><h2>{response ? response.search_mode === 'fuzzy' ? '近似文字结果' : response.search_mode === 'hybrid' ? '情节描述结果' : '关键词结果' : '剧情检索'}</h2>{response ? <span>{response.truncated ? '优先展示 ' : ''}{formatNumber(response.total)} 条相关结果{response.elapsed_ms != null && <small> · {(response.elapsed_ms / 1000).toFixed(2)} 秒</small>}</span> : <span>{formatNumber(status.data.stats?.narrative_lines ?? status.data.stats?.lines)} 条对白记录</span>}</div>
       <div className="results-scroll" aria-busy={searching} aria-live="polite">
         {searchError && <div className="inline-alert" role="alert">{searchError}</div>}
         {response?.notice && <div className="search-notice">{response.notice}</div>}
-        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{['三月七', '星穹列车', '匹诺康尼'].map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : response.results.length === 0 ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用人物名，或减少筛选条件。</p></Empty> : <div className="result-list">{response.results.map((result, index) => <button className={`result-card ${selected?.line_id === result.line_id && selected?.script === result.script ? 'selected' : ''}`} key={`${result.chunk_id}:${result.line_id}:${index}`} onClick={() => void selectResult(result, response.snapshot)}>
-          <div className="result-topline"><span>{result.world || '剧情对白'}</span><span className={!result.version ? 'pending-version' : ''}>{versionText(result.version, result.version_status)}</span></div><h3>{result.mission_name || '未关联任务的对白'}</h3>{result.chapter && <div className="result-chapter">{result.chapter}</div>}<p className="result-text"><strong>{result.kind?.includes("option") ? "开拓者 · 可选回答" : speakerName(result.speaker)}</strong><Highlight text={result.text} query={searchedQuery} /></p><div className="result-bottom"><span>{matchLabel(result)}</span><span className="result-open">阅读上下文 <span>→</span></span></div>
+        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨'].map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : response.results.length === 0 ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{response.results.map((result, index) => <button className={`result-card ${selected?.line_id === result.line_id && selected?.script === result.script ? 'selected' : ''}`} key={`${result.chunk_id}:${result.line_id}:${index}`} onClick={() => void selectResult(result, response.snapshot)}>
+          <div className="result-topline">
+            <div className="result-badges">
+              {result.type && <span className={`mission-badge type-${result.type.toLowerCase()}`}>{labels[result.type] || result.type}</span>}
+              <span className="world-badge">{result.world || '剧情对白'}</span>
+              {result.kind?.includes('option') && <span className="option-badge">❖ 玩家选项</span>}
+            </div>
+            <span className={!result.version ? 'pending-version' : 'version-tag'}>{versionText(result.version, result.version_status)}</span>
+          </div>
+          <h3>{result.mission_name || '未关联任务的对白'}{result.chapter && <small className="result-chapter"> · {result.chapter}</small>}</h3>
+          <p className="result-text"><strong>{result.kind?.includes("option") ? "❖ 开拓者选项" : speakerName(result.speaker)}</strong><span><Highlight text={result.text} query={searchedQuery} /></span></p>
+          <div className="result-bottom"><span>{matchLabel(result)}</span><span className="result-open">阅读上下文 <span>→</span></span></div>
         </button>)}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
-      </div><footer className="results-footer"><span>AGPL-3.0 · 无担保</span><a href="https://github.com/JahsehXL/hsr-story-search/tree/v0.4.0" target="_blank" rel="noreferrer">本版源码 ↗</a><a href="https://github.com/JahsehXL/hsr-story-search/blob/v0.4.0/LICENSE" target="_blank" rel="noreferrer">许可</a></footer>
+      </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>
     </section>
     <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={() => setSelected(null)} onVersionSave={saveVersion} onExpand={() => { if (selected) { const expanded = { ...selected, script: '', line_id: '' }; void selectResult(expanded, detail?.snapshot || response?.snapshot, true, true); } }} onMore={() => void moreContext()} />
     </main>

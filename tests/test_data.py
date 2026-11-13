@@ -54,6 +54,11 @@ class DataTests(unittest.TestCase):
     def test_alias_short_queries_filters_and_punctuation(self):
         self.assertTrue(lexical_search(self.db, "老杨"))
         self.assertTrue(lexical_search(self.db, "三月"))
+        self.assertTrue(lexical_search(self.db, "开拓途中注意休息"))
+        self.assertTrue(lexical_search(self.db, "三月七 星穹列车"))
+        self.assertTrue(lexical_search(self.db, "老杨 休息"))
+        self.assertTrue(lexical_search(self.db, "休息", {"character": "老杨"}))
+        self.assertTrue(lexical_search(self.db, "列车", {"character": "三月"}))
         self.assertEqual(lexical_search(self.db, "星穹列午"), [])
         self.assertTrue(lexical_search(self.db, "星穹列午", allow_fuzzy=True))
         self.assertEqual(lexical_search(self.db, "列车", {"world": "不存在"}), [])

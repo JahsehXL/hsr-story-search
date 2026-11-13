@@ -10,7 +10,24 @@ export function errorText(error: unknown) { return error instanceof Error ? erro
 export function versionText(version?: string, state?: string) { return version ? `${version}${state === 'inferred' ? ' · 推定' : ''}` : '版本待核实'; }
 export function Highlight({ text, query }: { text: string; query: string }) {
   text = displayText(text);
-  const words = [...new Set(query.trim().split(/\s+/).filter(Boolean))].sort((a, b) => b.length - a.length);
+  const cleanQuery = query.trim();
+  if (!cleanQuery) return <>{text}</>;
+  const rawTokens = [...new Set([cleanQuery, ...cleanQuery.split(/[\s，。？！、；：“”‘’「」『』（）《》—…·,.;:?!()[\]]+/).filter(Boolean)])];
+  let words = rawTokens.filter(w => text.toLowerCase().includes(w.toLowerCase()));
+  if (!words.length) {
+    const cjkRuns = cleanQuery.match(/[\u3400-\u9fff]{2,}/g) || [];
+    const subterms: string[] = [];
+    for (const run of cjkRuns) {
+      for (let len = Math.min(6, run.length); len >= 2; len--) {
+        for (let i = 0; i <= run.length - len; i++) {
+          const sub = run.slice(i, i + len);
+          if (text.includes(sub)) subterms.push(sub);
+        }
+      }
+    }
+    words = [...new Set(subterms)];
+  }
+  words.sort((a, b) => b.length - a.length);
   if (!words.length) return <>{text}</>;
   const pattern = words.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
   const pieces = text.split(new RegExp(`(${pattern})`, 'gi'));

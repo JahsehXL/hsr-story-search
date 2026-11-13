@@ -167,3 +167,35 @@ export function resolveStory(model: StoryModel, focus: StoryFocus) {
   }
   return { groups, missingTargets };
 }
+
+export function withDefaultChoices(model: StoryModel, focus: StoryFocus): StoryFocus {
+  if (!focus.rootKey) return focus;
+  const selections: Record<string, string> = { ...focus.selections };
+  const visited = new Set<string>();
+  const pending = [focus.rootKey];
+  while (pending.length) {
+    const key = pending.shift()!;
+    const group = model.byKey.get(key);
+    if (!group || visited.has(key)) continue;
+    visited.add(key);
+    const targets: string[] = [];
+    const choices = group.segments.filter(segment => segment.kind === 'choice');
+    for (const segment of choices) {
+      if (segment.kind !== 'choice') continue;
+      if (!selections[segment.choice.id] && segment.choice.options[0]) {
+        selections[segment.choice.id] = segment.choice.options[0].id;
+      }
+      const chosen = segment.choice.options.find(option => option.id === selections[segment.choice.id]);
+      if (chosen?.trigger) targets.push(chosen.trigger);
+    }
+    if (!choices.length) {
+      const continuation = model.continuations.get(branchKey(group.script, group.node)) || [];
+      if (continuation.length === 1) targets.push(continuation[0]);
+    }
+    for (const target of targets) {
+      const next = model.byBranch.get(branchKey(group.script, target));
+      if (next) pending.push(...next.map(item => item.key));
+    }
+  }
+  return { rootKey: focus.rootKey, selections };
+}

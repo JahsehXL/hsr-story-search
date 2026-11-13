@@ -18,6 +18,7 @@ export interface Result {
   mission_name: string;
   chapter: string;
   world: string;
+  type?: string;
   version: string;
   version_status: string;
   speaker: string;
