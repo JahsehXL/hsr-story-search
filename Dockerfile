@@ -13,6 +13,8 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && useradd --uid 10001 --create-home story \
     && mkdir /data && chown story:story /data
 COPY backend/ ./backend/
+COPY LICENSE THIRD_PARTY_NOTICES.md ./licenses/
+COPY frontend/src/assets/fonts/OFL-Archivo.txt ./licenses/
 COPY --from=frontend /web/dist/ ./frontend/dist/
 USER story
 EXPOSE 8765

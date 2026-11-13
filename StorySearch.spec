@@ -9,7 +9,13 @@ analysis = Analysis(
     [str(root / "launcher.py")],
     pathex=[str(root)],
     binaries=vector_binaries,
-    datas=[(str(root / "frontend" / "dist"), "frontend/dist"), (str(root / "backend" / "resources"), "backend/resources")],
+    datas=[
+        (str(root / "frontend" / "dist"), "frontend/dist"),
+        (str(root / "backend" / "resources"), "backend/resources"),
+        (str(root / "LICENSE"), "licenses"),
+        (str(root / "THIRD_PARTY_NOTICES.md"), "licenses"),
+        (str(root / "frontend" / "src" / "assets" / "fonts" / "OFL-Archivo.txt"), "licenses"),
+    ],
     hiddenimports=["uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets.auto", "uvicorn.lifespan.on", "sqlite_vec"],
     excludes=["tkinter"],
 )

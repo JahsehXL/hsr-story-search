@@ -152,6 +152,8 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
 .result-open > span { margin-left: 6px; }
 .results-footer { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line-soft); color: var(--subtle); font-size: 10px; }
 .results-footer .tiny-star { display: none; }
+.results-footer a { color: var(--muted); white-space: nowrap; }
+.results-footer a:hover { color: var(--accent); text-decoration: underline; }
 .load-results { width: 100%; margin-top: 12px; }
 .search-notice { font-size: 12px; line-height: 1.8; color: var(--muted); background: var(--surface-raised); border-radius: 6px; padding: 12px; margin: 12px; }
 .search-welcome { padding: 40px 24px; }
