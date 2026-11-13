@@ -6,6 +6,7 @@ import contextlib
 import copy
 import hashlib
 import json
+import math
 import os
 import ipaddress
 import re
@@ -149,6 +150,7 @@ class Runtime:
         self.controls: dict[str, dict] = {}
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="hsr-job")
         self.query_cache: dict[str, tuple[float, list[float]]] = {}
+        self.index_counts_cache: dict[str, tuple[tuple[int, int], int, int, int]] = {}
         self.usage_path = self.root / "api-usage.json"
         self.usage = json.loads(self.usage_path.read_text(encoding="utf-8")) if self.usage_path.exists() else {}
         self._save_jobs()
@@ -279,10 +281,29 @@ class Runtime:
         configured_dimension = config["embedding"].get("dimensions", 0)
         compatible = bool(meta and (not configured_dimension or configured_dimension == dimension) and meta.get("signature") == embedding_signature(config, dimension))
         total = 0
+        vector_count = 0
+        vector_dimension = 0
         if path:
-            with connect(path) as connection:
-                total = connection.execute("SELECT COUNT(*) FROM chunks WHERE script!='unlinked' AND mission_id!='unlinked'").fetchone()[0]
-        return {"ready": bool(compatible and self.settings.key() and meta.get("count", 0) == total), "compatible": compatible, "model": config["embedding"]["model"], "dimension": dimension or configured_dimension, "indexed": meta.get("count", 0), "total": total, "index_model": meta.get("model", ""), "index_identity": meta.get("identity", {}), "index_request_dimensions": meta.get("request_dimensions", dimension)}
+            stat = path.stat()
+            fingerprint = (stat.st_size, stat.st_mtime_ns)
+            cached = self.index_counts_cache.get(str(path))
+            if cached and cached[0] == fingerprint:
+                _, total, vector_count, vector_dimension = cached
+            else:
+                with db_connect(path) as connection:
+                    total = connection.execute("SELECT COUNT(*) FROM chunks WHERE script!='unlinked' AND mission_id!='unlinked'").fetchone()[0]
+                    table = connection.execute("SELECT 1 FROM sqlite_master WHERE name='chunk_vectors' AND type='table'").fetchone()
+                    if table:
+                        try:
+                            vector_count = connection.execute("SELECT COUNT(*) FROM chunk_vectors").fetchone()[0]
+                            row = connection.execute("SELECT vec_length(embedding) FROM chunk_vectors LIMIT 1").fetchone()
+                            vector_dimension = int(row[0]) if row else 0
+                        except sqlite3.DatabaseError:
+                            vector_count = 0
+                    self.index_counts_cache[str(path)] = (fingerprint, total, vector_count, vector_dimension)
+        index_ready = bool(compatible and total > 0 and meta.get("count", 0) == total == vector_count and dimension == vector_dimension)
+        server_key_ready = bool(self.settings.key())
+        return {"ready": index_ready and server_key_ready, "index_ready": index_ready, "server_key_ready": server_key_ready, "compatible": compatible, "model": config["embedding"]["model"], "dimension": dimension or configured_dimension, "indexed": meta.get("count", 0), "total": total, "index_model": meta.get("model", ""), "index_identity": meta.get("identity", {}), "index_request_dimensions": meta.get("request_dimensions", dimension)}
 
     def consume_api(self) -> None:
         with self.lock:
@@ -580,21 +601,58 @@ class Runtime:
             connection.execute("INSERT OR REPLACE INTO info(key,value) VALUES('embedding',?)", (json.dumps(metadata),))
             connection.commit()
 
-    def semantic_search(self, path: Path, query: str, filters: dict, limit: int = 100) -> list[dict]:
+    def validate_query_vector(self, path: Path, vector: list[float]) -> list[float]:
+        metadata = read_info(path, "embedding", {})
+        dimension = int(metadata.get("dimension", 0))
+        if not 1 <= dimension <= 32768 or len(vector) != dimension:
+            raise ValueError("查询向量长度与索引维度不匹配")
+        try:
+            values = [float(value) for value in vector]
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("查询向量必须包含有效浮点数") from None
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("查询向量必须全部为有限数值")
+        if not any(values):
+            raise ValueError("查询向量不能全部为零")
+        return values
+
+    def semantic_search(self, path: Path, query: str, filters: dict, limit: int = 100, query_vector: list[float] | None = None, visitor_key: str = "") -> list[dict]:
         config = self.settings.public()
         meta = read_info(path, "embedding", {})
-        cache_key = meta["signature"] + query
-        cached = self.query_cache.get(cache_key)
-        if cached and cached[0] > time.monotonic():
-            vector = cached[1]
+        if query_vector is not None:
+            vector = self.validate_query_vector(path, query_vector)
+        elif visitor_key:
+            identity = meta.get("identity") or {}
+            visitor_config = {
+                "embedding": {
+                    "base_url": "https://api.siliconflow.cn/v1", "model": identity.get("model") or meta["model"],
+                    "dimensions": int(meta.get("request_dimensions", 0)),
+                    "query_prefix": identity.get("query_prefix", ""), "document_prefix": identity.get("document_prefix", ""),
+                    "extra_body": identity.get("extra_body") or {}, "timeout": 20,
+                }
+            }
+            try:
+                vector = embed([query], visitor_config, visitor_key, query=True, max_attempts=2)[0]
+            except Exception:
+                raise EmbeddingError("访客语义请求失败，请检查硅基流动密钥、网络或模型权限") from None
         else:
-            vector = embed([query], config, self.settings.key(), query=True, consume=self.consume_api)[0]
-            if len(vector) != meta["dimension"]:
-                raise ValueError("查询向量与索引维度不匹配，请检查模型")
-            with self.lock:
-                if len(self.query_cache) >= 256:
-                    self.query_cache.pop(next(iter(self.query_cache)))
-                self.query_cache[cache_key] = (time.monotonic() + 300, vector)
+            if not self.settings.key():
+                raise EmbeddingError("请配置自己的语义搜索密钥")
+            cache_key = meta["signature"] + query
+            cached = self.query_cache.get(cache_key)
+            if cached and cached[0] > time.monotonic():
+                vector = cached[1]
+            else:
+                vector = embed([query], config, self.settings.key(), query=True, consume=self.consume_api)[0]
+                self.validate_query_vector(path, vector)
+                with self.lock:
+                    if len(self.query_cache) >= 256:
+                        self.query_cache.pop(next(iter(self.query_cache)))
+                    self.query_cache[cache_key] = (time.monotonic() + 300, vector)
+        vector = self.validate_query_vector(path, vector)
+        # Scaling preserves cosine similarity and safely fits every finite input into float32.
+        scale = max(abs(value) for value in vector)
+        vector = [value / scale for value in vector]
         from .search import filter_sql
         condition, arguments = filter_sql(filters)
         blob = sqlite_vec.serialize_float32(vector)

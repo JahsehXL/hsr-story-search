@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -44,6 +45,45 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=30, ge=1, le=100)
     offset: int = Field(default=0, ge=0, le=1000)
     snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{24}$")
+    query_vector: list[float] | None = Field(default=None, max_length=32768)
+
+
+class TrustedClientAddressMiddleware:
+    """Interpret forwarding headers only while the original peer is still available."""
+
+    def __init__(self, app, trusted_hosts: str):
+        self.app = app
+        self.trusted = []
+        for host in trusted_hosts.split(","):
+            try:
+                self.trusted.append(ipaddress.ip_network(host.strip(), strict=False))
+            except ValueError:
+                continue
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            scope = dict(scope)
+            peer = scope.get("client")
+            host = peer[0] if peer else "unknown"
+            try:
+                address = ipaddress.ip_address(host)
+                trusted = any(address in network for network in self.trusted)
+            except ValueError:
+                trusted = False
+            if trusted:
+                headers = dict(scope.get("headers", []))
+                for forwarded in (headers.get(b"x-real-ip", b""), headers.get(b"x-forwarded-for", b"").split(b",")[0]):
+                    try:
+                        host = str(ipaddress.ip_address(forwarded.decode("latin1").strip()))
+                        break
+                    except ValueError:
+                        continue
+                scheme = headers.get(b"x-forwarded-proto", b"").decode("latin1").strip()
+                if scheme in {"http", "https"}:
+                    scope["scheme"] = scheme
+            scope["client"] = (host, peer[1] if peer else 0)
+            scope["state"] = {**scope.get("state", {}), "client_ip": host}
+        await self.app(scope, receive, send)
 
 
 class MissionUpdate(BaseModel):
@@ -72,8 +112,9 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         raise ValueError("HSR_PUBLIC_PREFIX 必须以 / 开始和结束")
     admin_code = os.environ.get("HSR_ADMIN_CODE", "")
     access_code = os.environ.get("HSR_ACCESS_CODE", "")
-    if mode == "server" and (len(admin_code) < 12 or len(access_code) < 8):
-        raise ValueError("服务器模式需要 HSR_ADMIN_CODE（至少12字符）和 HSR_ACCESS_CODE（至少8字符）")
+    if mode == "server" and (len(admin_code) < 12 or (access_code and len(access_code) < 8)):
+        raise ValueError("服务器模式需要 HSR_ADMIN_CODE（至少12字符），可选访问码至少8字符")
+    public_readonly = mode == "server" and not access_code
     salt = secrets.token_bytes(32)
     def code_hash(code):
         return hashlib.pbkdf2_hmac("sha256", code.encode(), salt, 120000)
@@ -124,6 +165,14 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             raise HTTPException(403, "此操作需要管理员登录")
         return value
 
+    def reader(request: Request) -> dict:
+        value = session(request)
+        if value:
+            return value
+        if public_readonly:
+            return {"admin": False, "id": "ip:" + request.state.client_ip}
+        raise HTTPException(401, "请先输入访问码，或重新从本地启动器打开")
+
     def establish(request: Request, response: Response, admin: bool):
         token = secrets.token_urlsafe(32)
         with session_lock:
@@ -156,7 +205,8 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                 return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)
             route = request.url.path
             public_routes = {"/api/v1/status", "/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/bootstrap", "/api/v1/auth/logout"}
-            if route not in public_routes:
+            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/search"} or route.startswith("/api/v1/missions/"))
+            if route not in public_routes and not public_query:
                 current_session = session(request)
                 if not current_session:
                     return JSONResponse({"detail": "请先输入访问码，或重新从本地启动器打开"}, status_code=401)
@@ -215,9 +265,10 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
     @app.get("/api/v1/status")
     def status(request: Request):
         value = session(request)
-        if not value:
-            return {"mode": mode, "authenticated": False, "admin": False, "data": {"ready": False, "stats": {}, "snapshot": ""}, "embedding": {"ready": False, "compatible": False, "model": "", "dimension": 0, "indexed": 0, "total": 0}, "jobs": [], "version": VERSION}
-        return {"mode": mode, "authenticated": True, "admin": value["admin"], "data": runtime.status_data(), "embedding": runtime.embedding_status(), "jobs": runtime.public_jobs() if value["admin"] else [], "version": VERSION}
+        if not value and not public_readonly:
+            return {"mode": mode, "public_readonly": False, "authenticated": False, "admin": False, "data": {"ready": False, "stats": {}, "snapshot": ""}, "embedding": {"ready": False, "index_ready": False, "server_key_ready": False, "compatible": False, "model": "", "dimension": 0, "indexed": 0, "total": 0}, "jobs": [], "version": VERSION}
+        admin = bool(value and value["admin"])
+        return {"mode": mode, "public_readonly": public_readonly, "authenticated": True, "admin": admin, "data": runtime.status_data(), "embedding": runtime.embedding_status(), "jobs": runtime.public_jobs() if admin else [], "version": VERSION}
 
     @app.post("/api/v1/auth/bootstrap")
     def bootstrap(payload: Bootstrap, request: Request, response: Response):
@@ -244,7 +295,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         return {"ok": True}
 
     @app.get("/api/v1/catalog")
-    def catalog(user=Depends(authenticated)):
+    def catalog(user=Depends(reader)):
         path, _ = runtime.active_path()
         if not path:
             return {"worlds": [], "versions": [], "types": [], "characters": []}
@@ -252,7 +303,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         return get_catalog(path)
 
     @app.post("/api/v1/search")
-    def search(payload: SearchRequest, user=Depends(authenticated)):
+    def search(payload: SearchRequest, request: Request, user=Depends(reader)):
         limited("search:" + user["id"], runtime.settings.value["limits"]["search_per_minute"])
         start = time.monotonic()
         if not search_slots.acquire(timeout=5.0):
@@ -266,18 +317,24 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             path, snapshot = runtime.active_path(payload.snapshot)
             if not path:
                 raise ValueError("请先导入剧情数据")
+            visitor_key = request.headers.get("X-Embedding-Key", "")
+            if len(visitor_key) > 4096 or any(character in visitor_key for character in ("\r", "\n")):
+                raise ValueError("访客嵌入密钥格式无效")
+            visitor_key = visitor_key.strip()
+            if payload.query_vector is not None:
+                runtime.validate_query_vector(path, payload.query_vector)
             from .search import lexical_search
             lexical = lexical_search(path, query, payload.filters, limit=500, allow_fuzzy=payload.mode == "fuzzy")
             semantic = []
             notice = ""
             search_mode = "fuzzy" if payload.mode == "fuzzy" else "text"
             if payload.mode == "hybrid":
-                if runtime.embedding_status(path)["ready"]:
+                if runtime.embedding_status(path)["index_ready"]:
                     try:
-                        semantic = runtime.semantic_search(path, query, payload.filters, limit=500)
+                        semantic = runtime.semantic_search(path, query, payload.filters, limit=500, query_vector=payload.query_vector, visitor_key=visitor_key)
                         search_mode = "hybrid"
-                    except Exception as exc:
-                        notice = "语义搜索暂不可用，已显示文字搜索结果。" + str(exc)[:160]
+                    except Exception:
+                        notice = "语义搜索暂不可用，已显示文字搜索结果。请检查语义搜索密钥与模型配置。"
                 else:
                     notice = "语义索引尚未就绪或模型配置不匹配，当前使用文字搜索。"
             scores = defaultdict(float)
@@ -296,7 +353,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             search_slots.release()
 
     @app.get("/api/v1/missions/{identifier}")
-    def mission(identifier: str, line_id: str | None = None, script: str | None = None, snapshot: str | None = None, offset: int = 0, limit: int = 1000, user=Depends(authenticated)):
+    def mission(identifier: str, line_id: str | None = None, script: str | None = None, snapshot: str | None = None, offset: int = 0, limit: int = 1000, user=Depends(reader)):
         path, snapshot = runtime.active_path(snapshot)
         if not path:
             raise ValueError("请先导入剧情数据")
@@ -417,6 +474,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         @app.get("/")
         def development_page():
             return JSONResponse({"message": "网页尚未构建，请在 frontend 目录运行 npm run build", "version": VERSION})
+    app.add_middleware(TrustedClientAddressMiddleware, trusted_hosts=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1,::1"))
     return app
 
 
@@ -435,7 +493,7 @@ def main():
         import webbrowser
         threading.Timer(1, lambda: webbrowser.open(f"http://127.0.0.1:{args.port}/#bootstrap={token}")).start()
     import uvicorn
-    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=True, forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"), access_log=False)
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False, access_log=False)
 
 
 if __name__ == "__main__":

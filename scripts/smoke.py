@@ -43,9 +43,14 @@ def main() -> None:
         return value
 
     call("health")
-    call("search", {"query": "星穹列车"}, expected=401)
-    call("auth/login", {"code": credentials["access_code"], "admin": False})
-    call("admin/settings", expected=403)
+    status = call("status")
+    if status.get("public_readonly"):
+        call("search", {"query": "星穹列车", "mode": "text", "limit": 1})
+        call("admin/settings", expected=401)
+    else:
+        call("search", {"query": "星穹列车"}, expected=401)
+        call("auth/login", {"code": credentials["access_code"], "admin": False})
+        call("admin/settings", expected=403)
     catalog = call("catalog")
     assert catalog["worlds"], "World catalog is empty"
     for query in ("星穹列车", "老杨", "星穹列午", "长日入夜行"):

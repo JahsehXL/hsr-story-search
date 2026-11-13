@@ -1,7 +1,7 @@
 services:
   story-search:
     build: .
-    image: hsr-story-search:0.3.0
+    image: hsr-story-search:0.4.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:8765:8765"
@@ -12,8 +12,8 @@ services:
       HSR_DATA_DIR: /data
     volumes:
       - ./data:/data
-    mem_limit: 3g
-    cpus: 1.5
+    mem_limit: 2g
+    cpus: 1.0
     security_opt:
       - no-new-privileges:true
     cap_drop:

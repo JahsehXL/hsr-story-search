@@ -123,6 +123,14 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
 .mode-tabs button:hover { background: var(--surface-hover); }
 .mode-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--surface-raised); }
 .mode-description { color: var(--subtle); font-size: 12px; margin: 0; line-height: 1.7; }
+.search-methods { flex-wrap: wrap; }
+.semantic-key-link { font-size: 12px; color: var(--accent); white-space: nowrap; }
+.semantic-key-link > span { color: var(--subtle); margin-left: 5px; font-size: 11px; }
+.visitor-key-form { padding: 22px 26px 28px; overflow: auto; }
+.visitor-key-form p { font-size: 14px; color: var(--muted); line-height: 1.8; margin: 0 0 18px; }
+.visitor-key-form a { color: var(--accent); margin-left: 5px; }
+.visitor-key-form a:hover { text-decoration: underline; }
+.visitor-key-form .key-storage-note { font-size: 12px; }
 .search-help { margin-top: 10px; font-size: 12px; color: var(--subtle); }
 .search-help summary { cursor: pointer; width: fit-content; padding: 4px 0; }
 .search-help > div { padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; background: var(--surface); }

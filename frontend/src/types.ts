@@ -1,10 +1,11 @@
 export interface Status {
   mode: 'local' | 'server';
   authenticated: boolean;
+  public_readonly?: boolean;
   admin: boolean;
   version: string;
   data: { ready: boolean; snapshot: string; stats: Record<string, number | string> };
-  embedding: { ready: boolean; compatible: boolean; model: string; dimension: number; indexed: number; total: number; index_model?: string; index_request_dimensions?: number; index_identity?: { model: string; dimension: number; query_prefix: string; document_prefix: string; extra_body: Record<string, unknown> } };
+  embedding: { ready: boolean; index_ready?: boolean; server_key_ready?: boolean; compatible: boolean; model: string; dimension: number; indexed: number; total: number; index_model?: string; index_request_dimensions?: number; index_identity?: { model: string; dimension: number; query_prefix: string; document_prefix: string; extra_body: Record<string, unknown> } };
   jobs?: Job[];
 }
 

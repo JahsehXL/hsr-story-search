@@ -1,18 +1,21 @@
-const base = new URL('api/v1/', document.baseURI);
+import type { PreparedSemanticQuery } from './semantic';
 
 export function apiUrl(path: string): string {
+  const base = new URL('api/v1/', document.baseURI);
   return new URL(path.replace(/^\//, ''), base).toString();
 }
 
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (typeof options.body === 'string' && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const response = await fetch(apiUrl(path), { ...options, headers, credentials: 'same-origin' });
+  let response: Response;
+  try { response = await fetch(apiUrl(path), { ...options, headers, credentials: 'same-origin' }); }
+  catch { throw new Error('无法连接检索服务，请检查网络后重试'); }
   if (!response.ok) {
     let message = `请求失败（${response.status}）`;
     try {
       const data = await response.json();
-      message = typeof data.detail === 'string' ? data.detail : typeof data.error === 'string' ? data.error : message;
+      if (!headers.has('X-Embedding-Key')) message = typeof data.detail === 'string' ? data.detail : typeof data.error === 'string' ? data.error : message;
     } catch { /* Preserve the HTTP error when the response is not JSON. */ }
     throw new Error(message);
   }
@@ -20,8 +23,12 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   return response.json() as Promise<T>;
 }
 
-export function post<T>(path: string, body: unknown = {}): Promise<T> {
-  return request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+export function post<T>(path: string, body: unknown = {}, options: RequestInit = {}): Promise<T> {
+  return request<T>(path, { ...options, method: 'POST', body: JSON.stringify(body) });
+}
+
+export function searchRequest<T>(body: Record<string, unknown>, prepared: PreparedSemanticQuery = {}): Promise<T> {
+  return post<T>('search', { ...body, query_vector: prepared.queryVector }, prepared.fallbackKey ? { headers: { 'X-Embedding-Key': prepared.fallbackKey } } : {});
 }
 
 export function downloadJson(name: string, content: unknown): void {

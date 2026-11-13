@@ -12,7 +12,9 @@ class EmbeddingError(RuntimeError):
     pass
 
 
-def embed(texts: list[str], settings: dict, key: str, query: bool = False, consume: Callable[[], None] | None = None, checkpoint: Callable[[], None] | None = None) -> list[list[float]]:
+def embed(texts: list[str], settings: dict, key: str, query: bool = False, consume: Callable[[], None] | None = None, checkpoint: Callable[[], None] | None = None, max_attempts: int = 5) -> list[list[float]]:
+    if not 1 <= max_attempts <= 5:
+        raise EmbeddingError("嵌入请求重试次数超出支持范围")
     config = settings.get("embedding", settings)
     base_url = config["base_url"].rstrip("/")
     if not base_url or not config["model"] or not key:
@@ -24,7 +26,7 @@ def embed(texts: list[str], settings: dict, key: str, query: bool = False, consu
     if dimension:
         payload["dimensions"] = dimension
     with httpx.Client(timeout=float(config.get("timeout", 60)), follow_redirects=False, trust_env=False) as client:
-        for attempt in range(5):
+        for attempt in range(max_attempts):
             if checkpoint:
                 checkpoint()
             if consume:
@@ -32,12 +34,12 @@ def embed(texts: list[str], settings: dict, key: str, query: bool = False, consu
             try:
                 response = client.post(endpoint, headers={"Authorization": f"Bearer {key}"}, json=payload)
             except httpx.TransportError as exc:
-                if attempt == 4:
+                if attempt + 1 == max_attempts:
                     raise EmbeddingError("连接嵌入 API 失败，请检查网络和接口地址") from exc
                 _wait(2 ** attempt, checkpoint)
                 continue
             if response.status_code == 429 or response.status_code >= 500:
-                if attempt == 4:
+                if attempt + 1 == max_attempts:
                     raise EmbeddingError(f"嵌入 API 暂时不可用，HTTP {response.status_code}")
                 try:
                     delay = min(30, max(1, float(response.headers.get("Retry-After", 2 ** attempt))))
