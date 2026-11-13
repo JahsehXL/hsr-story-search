@@ -1,6 +1,13 @@
 import type { ReactNode } from 'react';
 
 export function speakerName(value: string) { return !value || value.includes('{NICKNAME}') || value === 'PlayerName' ? '开拓者' : value; }
+export function cleanMissionName(name?: string, chapter?: string, world?: string) {
+  const cleaned = (name || '').replace(/<[^>]*>/g, '').replace(/^任务\s*\d+$/i, '').trim();
+  if (cleaned) return cleaned;
+  if (chapter && !/^任务\s*\d+$/i.test(chapter.trim())) return chapter.trim();
+  if (world) return `${world} · 场景探索对话`;
+  return '剧情对白';
+}
 export function displayText(value: string) {
   return value.replace(/\{RUBY_B#([^}]*)\}([\s\S]*?)\{RUBY_E#\}/g, '$2（$1）')
     .replace(/<[^>]*>/g, '').replace(/\{(?:F|M)#([^}]*)\}/g, '$1')

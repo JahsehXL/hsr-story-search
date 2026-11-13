@@ -252,7 +252,7 @@ def lexical_search(path: Path | str, query: str, filters: dict | None = None, li
         if not candidate_ids:
             return []
         placeholders = ",".join("?" for _ in candidate_ids)
-        rows = conn.execute(f"""SELECT c.id,m.name,m.world,m.chapter,
+        rows = conn.execute(f"""SELECT c.id,m.name,m.world,m.chapter,m.type,
             (SELECT group_concat(search_text,'\n') FROM lines WHERE chunk_id=c.id) body,
             (SELECT group_concat(DISTINCT speaker) FROM lines WHERE chunk_id=c.id) speakers
             FROM chunks c JOIN missions m ON m.id=c.mission_id WHERE c.id IN ({placeholders})""", list(candidate_ids)).fetchall()
@@ -262,7 +262,8 @@ def lexical_search(path: Path | str, query: str, filters: dict | None = None, li
             score, match_type, matched_field = max((_score_fields(variant, fields, allow_fuzzy) for variant in variants), key=lambda value: value[0])
             if score > 0:
                 line_bonus = max((_score_fields(variant, {"text": line_str}, allow_fuzzy)[0] for variant in variants for line_str in body_text.split("\n") if line_str), default=0.0)
-                bonus = (4.0 if line_bonus >= 265.0 else 0.0) + min(3.9, max(0.0, -fts_ranks.get(row["id"], 0.0)) * 0.15)
+                type_bonus = 1.5 if row["type"] and row["type"] != "其他任务" else 0.0
+                bonus = (4.0 if line_bonus >= 265.0 else 0.0) + type_bonus + min(3.9, max(0.0, -fts_ranks.get(row["id"], 0.0)) * 0.15)
                 candidates[row["id"]] = (score + bonus, match_type, matched_field)
         ordered = sorted(candidates, key=lambda identifier: (-candidates[identifier][0], identifier))[:limit]
         results = _results(conn, ordered, query, allow_fuzzy)

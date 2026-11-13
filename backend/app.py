@@ -145,6 +145,8 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                         rates.pop(key, None)
 
     def session(request: Request) -> dict | None:
+        if mode == "local" and bootstrap_hash is None:
+            return {"admin": True, "expires": float("inf"), "id": "local"}
         token = request.cookies.get("hsr_session", "")
         with session_lock:
             value = sessions.get(token)
@@ -487,11 +489,10 @@ def main():
     args = parser.parse_args()
     if args.mode == "local" and args.host not in {"127.0.0.1", "localhost", "::1"}:
         parser.error("本地模式仅支持回环监听地址")
-    token = secrets.token_urlsafe(32) if args.mode == "local" else None
-    app = create_app(Path(args.data_dir), mode=args.mode, bootstrap_token=token)
-    if token:
+    app = create_app(Path(args.data_dir), mode=args.mode, bootstrap_token=None)
+    if args.mode == "local":
         import webbrowser
-        threading.Timer(1, lambda: webbrowser.open(f"http://127.0.0.1:{args.port}/#bootstrap={token}")).start()
+        threading.Timer(1, lambda: webbrowser.open(f"http://127.0.0.1:{args.port}/")).start()
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False, access_log=False)
 

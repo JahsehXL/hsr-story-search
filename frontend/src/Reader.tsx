@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { displayText, Empty, errorText, Highlight, speakerName, versionText } from './presentation';
+import { cleanMissionName, displayText, Empty, errorText, Highlight, speakerName, versionText } from './presentation';
 import { buildStoryModel, focusStory, resolveStory, shareStoryAnchor, windowStoryGroup, withDefaultChoices } from './story';
 import type { ChoiceSet, StoryFocus } from './story';
 import type { DialogueLine, MissionResponse, Result } from './types';
@@ -144,10 +144,11 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
   }
 
   if (!selected) return <section className="reader reader-idle"><div><h2>选择左侧结果，回到故事里</h2><p>以剧本台词本形式查看前后文、任务版本与全部玩家分支选项。</p></div></section>;
-  const name = mission?.name || selected.mission_name || '剧情对白';
   const chapter = mission?.chapter || selected.chapter;
+  const world = mission?.world || selected.world;
+  const name = cleanMissionName(mission?.name || selected.mission_name, chapter, world);
   const typeKey = mission?.type || selected.type || '';
-  const copySource = [name, chapter, mission?.world || selected.world, versionText(mission?.version || selected.version, mission?.version_status || selected.version_status)].filter(Boolean).join(' · ');
+  const copySource = [name, chapter && chapter !== name ? chapter : '', world, versionText(mission?.version || selected.version, mission?.version_status || selected.version_status)].filter(Boolean).join(' · ');
   const copyText = visibleLines.length ? visibleLines.map(line => `${speakerName(line.speaker)}：${displayText(line.text)}`).join('\n\n') : `${speakerName(selected.speaker)}：${selected.text}`;
   const hasMore = detail?.has_more ?? (detail ? detail.total > (detail.offset || 0) + detail.lines.length : false);
 

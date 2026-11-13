@@ -4,7 +4,7 @@ import { apiUrl, downloadJson, post, request, searchRequest } from './api';
 import { createSemanticSearchClient, indexReady, loadVisitorKey, saveVisitorKey, serverKeyReady, VISITOR_KEY_STORAGE } from './semantic';
 import type { SemanticContext } from './semantic';
 import Reader from './Reader';
-import { speakerName, errorText, versionText, Highlight, Empty } from './presentation';
+import { cleanMissionName, speakerName, errorText, versionText, Highlight, Empty } from './presentation';
 import type { Bookmark, Catalog, DialogueLine, Filters, Job, MissionResponse, Result, SearchMode, SearchResponse, Settings, Status } from './types';
 
 const emptyFilters: Filters = { world: '', version: '', type: '', character: '' };
@@ -52,10 +52,77 @@ function matchLabel(result: Result) {
   return labels[result.match_type] || '相关对白';
 }
 
-function SelectField({ label, value, values, onChange }: { label: string; value: string; values: string[]; onChange: (v: string) => void }) {
-  return <label className={`filter ${value ? 'has-value' : ''}`}><span>{label}</span><select value={value} onChange={e => onChange(e.target.value)} aria-label={`${label}筛选`} title={value ? labels[value] || value : `全部${label}`}>
-    <option value="">全部</option>{values.map(v => <option key={v} value={v}>{labels[v] || v}</option>)}
-  </select><span className="select-arrow" aria-hidden="true">⌄</span></label>;
+function SelectField({ label, value, values, onChange, searchable = false }: { label: string; value: string; values: string[]; onChange: (v: string) => void; searchable?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    if (searchable) setTimeout(() => inputRef.current?.focus(), 0);
+    const onPointer = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open, searchable]);
+
+  const displayValue = value ? (labels[value] || value) : '全部';
+  const filtered = searchable && search.trim()
+    ? values.filter(v => (labels[v] || v).toLowerCase().includes(search.trim().toLowerCase()))
+    : values;
+
+  return <div ref={wrapRef} className={`filter-dropdown ${value ? 'has-value' : ''} ${open ? 'is-open' : ''}`}>
+    <button
+      type="button"
+      className="filter"
+      aria-label={`${label}筛选`}
+      aria-expanded={open}
+      title={value ? `${label}：${displayValue}` : `全部${label}`}
+      onClick={() => { setOpen(o => !o); setSearch(''); }}
+    >
+      <span>{label}</span>
+      <strong className="filter-value">{displayValue}</strong>
+      <span className="select-arrow" aria-hidden="true">⌄</span>
+    </button>
+    {open && <div className="filter-menu" role="listbox" aria-label={`${label}选项`}>
+      {searchable && <div className="filter-search-box">
+        <input
+          ref={inputRef}
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder={`搜索或输入${label}…`}
+          aria-label={`搜索${label}`}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && search.trim()) {
+              e.preventDefault();
+              onChange(filtered[0] || search.trim());
+              setOpen(false);
+            }
+          }}
+        />
+      </div>}
+      <div className="filter-options">
+        <button type="button" role="option" aria-selected={!value} className={`filter-option ${!value ? 'is-selected' : ''}`} onClick={() => { onChange(''); setOpen(false); }}>
+          <span>全部</span>{!value && <span aria-hidden="true">✓</span>}
+        </button>
+        {searchable && search.trim() && !values.includes(search.trim()) && <button type="button" role="option" aria-selected={value === search.trim()} className="filter-option" onClick={() => { onChange(search.trim()); setOpen(false); }}>
+          <span>查找「{search.trim()}」</span>
+        </button>}
+        {filtered.map(v => <button key={v} type="button" role="option" aria-selected={value === v} className={`filter-option ${value === v ? 'is-selected' : ''}`} onClick={() => { onChange(v); setOpen(false); }}>
+          <span>{labels[v] || v}</span>{value === v && <span aria-hidden="true">✓</span>}
+        </button>)}
+      </div>
+    </div>}
+  </div>;
 }
 
 function Modal({ title, close, children, wide = false }: { title: string; close: () => void; children: ReactNode; wide?: boolean }) {
@@ -305,7 +372,7 @@ export default function App() {
 
   return <div className={`app-shell ${selected ? 'has-selection' : ''}`}>
     <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); setSelected(null); setDetail(null); setResponse(null); setQuery(''); setSearchedQuery(''); history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
-      <div className="header-actions"><span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button><button className="icon-button" onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} title="切换主题">{theme === 'dark' ? '☼' : '☾'}</button><button className="header-button" aria-label="管理档案" title="管理" onClick={() => status.admin ? setShowSettings(true) : setShowAdminLogin(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>{status.mode === 'server' && (!status.public_readonly || status.admin) && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
+      <div className="header-actions"><span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button><button className="icon-button" onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} title="切换主题">{theme === 'dark' ? '☼' : '☾'}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
     </header>
     <section className="search-section">
       <form className="search-form" onSubmit={e => { e.preventDefault(); void runSearch(query); }}>
@@ -327,9 +394,9 @@ export default function App() {
         <div className="search-options">
           <div className="filter-row">
             <SelectField label="世界" value={filters.world} values={catalog.worlds} onChange={v => setFilters(old => ({ ...old, world: v }))} />
-            <SelectField label="版本" value={filters.version} values={[...catalog.versions.filter(value => value !== "unknown"), "unknown"]} onChange={v => setFilters(old => ({ ...old, version: v }))} />
+            <SelectField label="版本" value={filters.version} values={catalog.versions} onChange={v => setFilters(old => ({ ...old, version: v }))} />
             <SelectField label="任务类型" value={filters.type} values={catalog.types} onChange={v => setFilters(old => ({ ...old, type: v }))} />
-            <label className={`filter character-filter ${filters.character ? 'has-value' : ''}`}><span>角色</span><input value={filters.character} onChange={e => setFilters(old => ({ ...old, character: e.target.value }))} list="character-list" placeholder="全部角色" aria-label="角色筛选" /><datalist id="character-list">{catalog.characters.map(name => <option key={name} value={name} />)}</datalist></label>
+            <SelectField label="角色" value={filters.character} values={catalog.characters} searchable onChange={v => setFilters(old => ({ ...old, character: v }))} />
             {Object.values(filters).some(Boolean) && <button type="button" className="text-button clear-filters" onClick={() => setFilters(emptyFilters)}>重置筛选</button>}
           </div>
         </div>
@@ -339,7 +406,9 @@ export default function App() {
       <div className="results-scroll" aria-busy={searching} aria-live="polite">
         {searchError && <div className="inline-alert" role="alert">{searchError}</div>}
         {response?.notice && <div className="search-notice">{response.notice}</div>}
-        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨'].map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : response.results.length === 0 ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{response.results.map((result, index) => <button className={`result-card ${selected?.line_id === result.line_id && selected?.script === result.script ? 'selected' : ''}`} key={`${result.chunk_id}:${result.line_id}:${index}`} onClick={() => void selectResult(result, response.snapshot)}>
+        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨'].map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : response.results.length === 0 ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{response.results.map((result, index) => {
+          const title = cleanMissionName(result.mission_name, result.chapter, result.world);
+          return <button className={`result-card ${selected?.line_id === result.line_id && selected?.script === result.script ? 'selected' : ''}`} key={`${result.chunk_id}:${result.line_id}:${index}`} onClick={() => void selectResult(result, response.snapshot)}>
           <div className="result-topline">
             <div className="result-badges">
               {result.type && <span className={`mission-badge type-${result.type.toLowerCase()}`}>{labels[result.type] || result.type}</span>}
@@ -348,10 +417,10 @@ export default function App() {
             </div>
             <span className={!result.version ? 'pending-version' : 'version-tag'}>{versionText(result.version, result.version_status)}</span>
           </div>
-          <h3>{result.mission_name || '未关联任务的对白'}{result.chapter && <small className="result-chapter"> · {result.chapter}</small>}</h3>
+          <h3>{title}{result.chapter && result.chapter !== title && <small className="result-chapter"> · {result.chapter}</small>}</h3>
           <p className="result-text"><strong>{result.kind?.includes("option") ? "❖ 开拓者选项" : speakerName(result.speaker)}</strong><span><Highlight text={result.text} query={searchedQuery} /></span></p>
           <div className="result-bottom"><span>{matchLabel(result)}</span><span className="result-open">阅读上下文 <span>→</span></span></div>
-        </button>)}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
+        </button>; })}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
       </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>
     </section>
     <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={() => setSelected(null)} onVersionSave={saveVersion} onExpand={() => { if (selected) { const expanded = { ...selected, script: '', line_id: '' }; void selectResult(expanded, detail?.snapshot || response?.snapshot, true, true); } }} onMore={() => void moreContext()} />
@@ -359,7 +428,7 @@ export default function App() {
     {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('')} /></Modal>}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}
     {showSettings && <Modal title="档案管理" close={() => setShowSettings(false)} wide><Admin status={status} onRefresh={() => refresh()} onToast={setToast} /></Modal>}
-    {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setSearchedQuery(bookmark.query); setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot); }}><h3>{bookmark.result.mission_name || '未关联任务的对白'}</h3><p>{bookmark.result.text || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
+    {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setSearchedQuery(bookmark.query); setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{bookmark.result.text || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
     {toast && <div className="toast" role="status">{toast}</div>}
   </div>;
 }
