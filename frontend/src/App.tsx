@@ -219,7 +219,6 @@ export default function App() {
   const [visitorKey, setVisitorKey] = useState(storedVisitorKey);
   const [visitorEndpoint, setVisitorEndpoint] = useState(storedVisitorEndpoint);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => { try { return JSON.parse(localStorage.getItem('hsr-bookmarks') || '[]'); } catch { return []; } });
-  const [theme, setTheme] = useState(document.documentElement.dataset.theme || 'dark');
   const [toast, setToast] = useState('');
   const searchId = useRef(0);
   const readerId = useRef(0);
@@ -380,7 +379,6 @@ export default function App() {
     } else if (route.query) void runSearch(route.query);
   }, [readable, runSearch, selectResult]);
 
-  useEffect(() => { document.documentElement.dataset.theme = theme; try { localStorage.setItem('hsr-theme', theme); } catch {} }, [theme]);
   useEffect(() => { try { localStorage.setItem('hsr-bookmarks', JSON.stringify(bookmarks)); } catch { setToast('浏览器存储空间不足，请导出收藏备份'); } }, [bookmarks]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 3500); return () => clearTimeout(timer); }, [toast]);
   useEffect(() => { const key = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); searchInput.current?.focus(); } }; document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key); }, []);
@@ -429,7 +427,7 @@ export default function App() {
 
   return <div className={`app-shell ${selected ? 'has-selection' : ''}`}>
     <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); searchId.current++; searchController.current?.abort(); setSearching(false); clearReader(); setResponse(null); setQuery(''); setSearchedQuery(''); history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
-      <div className="header-actions">{status.mode === 'server' && <a className="header-button" href="/" aria-label="返回首页" title="返回首页"><span aria-hidden="true">←</span><span>返回首页</span></a>}<span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button><button className="icon-button" onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} title="切换主题">{theme === 'dark' ? '☼' : '☾'}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
+      <div className="header-actions">{status.mode === 'server' && <a className="header-button" href="/" aria-label="返回首页" title="返回首页"><span aria-hidden="true">←</span><span>返回首页</span></a>}<span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
     </header>
     <section className="search-section">
       <form className="search-form" onSubmit={e => { e.preventDefault(); void runSearch(query); }}>
@@ -441,10 +439,11 @@ export default function App() {
       </form>
       <div className="search-toolbar">
         <div className="search-methods">
-          <div className="mode-tabs" role="group" aria-label="搜索方式">
-            <button type="button" aria-pressed={mode === 'text'} onClick={() => chooseMode('text')}>关键词</button>
-            <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={indexReady(status.embedding) ? '按情节描述搜索' : '管理员建立完整语义索引后可用'} onClick={() => chooseMode('hybrid')}>情节描述</button>
-            <button type="button" aria-pressed={mode === 'fuzzy'} onClick={() => chooseMode('fuzzy')}>近似文字</button>
+          <span className="mode-label" id="search-mode-label">搜索模式</span>
+          <div className="mode-tabs" role="group" aria-labelledby="search-mode-label">
+            <button type="button" aria-pressed={mode === 'text'} title="按台词、任务名或角色精确/分词搜索" onClick={() => chooseMode('text')}>关键词</button>
+            <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={indexReady(status.embedding) ? '用自然语言描述人物、事件或情节' : '管理员建立完整语义索引后可用'} onClick={() => chooseMode('hybrid')}>情节描述</button>
+            <button type="button" aria-pressed={mode === 'fuzzy'} title="按大致记得的台词或模糊片段匹配" onClick={() => chooseMode('fuzzy')}>近似文字</button>
           </div>
           <button type="button" className="text-button semantic-key-link" onClick={() => setShowVisitorKey(true)}>🔑 语义密钥{visitorKey && <span>已配置</span>}</button>
         </div>
