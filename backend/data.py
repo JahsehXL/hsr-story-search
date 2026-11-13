@@ -378,6 +378,12 @@ def get_catalog(path: Path | str) -> dict:
         return result
 
 
+def _script_sort_key(row: dict) -> tuple:
+    stem = str(row.get("script", "")).rsplit("/", 1)[-1].split(".")[0]
+    nums = [int(n) for n in re.findall(r"\d+", stem)]
+    return (nums[-1] if nums else 0, row.get("script", ""), row.get("sequence", 0), row.get("position", 0))
+
+
 def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
                 script: str | None = None, offset: int = 0, limit: int = 1000) -> dict:
     limit = max(1, min(limit, 1000))
@@ -386,22 +392,20 @@ def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
         mission = conn.execute("SELECT * FROM missions WHERE id=?", (str(mission_id),)).fetchone()
         if not mission:
             raise KeyError(mission_id)
-        if line_id:
-            focus = conn.execute("SELECT script FROM lines WHERE id=? AND mission_id=?", (line_id, str(mission_id))).fetchone()
-            if focus:
-                script = focus["script"]
         condition = "mission_id=?"
         args: list = [str(mission_id)]
         if script:
             condition += " AND script=?"
             args.append(script)
-        total = conn.execute(f"SELECT count(*) FROM lines WHERE {condition}", args).fetchone()[0]
+        all_lines = [dict(row) for row in conn.execute(f"SELECT * FROM lines WHERE {condition}", args)]
+        all_lines.sort(key=_script_sort_key)
+        total = len(all_lines)
         if line_id:
-            position = conn.execute(f"""SELECT rn FROM (SELECT id,row_number() OVER(ORDER BY script,sequence,position) - 1 rn
-                FROM lines WHERE {condition}) WHERE id=?""", args + [line_id]).fetchone()
-            if position:
-                offset = max(0, position[0] - limit // 3)
-        lines = [dict(row) for row in conn.execute(f"SELECT * FROM lines WHERE {condition} ORDER BY script,sequence,position LIMIT ? OFFSET ?", args + [limit, offset])]
+            for idx, item in enumerate(all_lines):
+                if item["id"] == line_id:
+                    offset = max(0, idx - limit // 3)
+                    break
+        lines = all_lines[offset:offset + limit]
         scripts = sorted({row["script"] for row in lines})
         edges = []
         if scripts:

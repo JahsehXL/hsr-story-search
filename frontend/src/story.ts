@@ -199,3 +199,136 @@ export function withDefaultChoices(model: StoryModel, focus: StoryFocus): StoryF
   }
   return { rootKey: focus.rootKey, selections };
 }
+
+export function resolveFullMissionStory(
+  model: StoryModel,
+  hitLineId = '',
+  customSelections: Record<string, string> = {},
+) {
+  const reverseContinuations = new Map<string, string[]>();
+  const childTargets = new Set<string>();
+
+  for (const [targetKey, parentList] of model.parents.entries()) {
+    if (parentList.some(p => branchKey(p.group.script, p.group.node) !== targetKey)) {
+      childTargets.add(targetKey);
+    }
+  }
+  for (const [sourceKey, targets] of model.continuations.entries()) {
+    const [script, sourceNode] = JSON.parse(sourceKey) as [string, string];
+    for (const target of targets) {
+      if (target === 'sequence:0') continue;
+      const targetKey = branchKey(script, target);
+      if (targetKey !== sourceKey) {
+        childTargets.add(targetKey);
+        const list = reverseContinuations.get(targetKey) || [];
+        if (!list.includes(sourceNode)) reverseContinuations.set(targetKey, [...list, sourceNode]);
+      }
+    }
+  }
+
+  const hitChoices: Record<string, string> = {};
+  const hitGroup = hitLineId ? model.byLine.get(hitLineId) : undefined;
+  if (hitGroup) {
+    for (const segment of hitGroup.segments) {
+      if (segment.kind === 'choice' && segment.choice.options.some(opt => opt.id === hitLineId)) {
+        hitChoices[segment.choice.id] = hitLineId;
+      }
+    }
+    const visitedBack = new Set<string>([hitGroup.key]);
+    const queue: StoryGroup[] = [hitGroup];
+    while (queue.length) {
+      const curr = queue.shift()!;
+      const currKey = branchKey(curr.script, curr.node);
+      for (const parent of model.parents.get(currKey) || []) {
+        if (!hitChoices[parent.choice.id]) {
+          hitChoices[parent.choice.id] = parent.option.id;
+        }
+        if (!visitedBack.has(parent.group.key)) {
+          visitedBack.add(parent.group.key);
+          queue.push(parent.group);
+        }
+      }
+      for (const sourceNode of reverseContinuations.get(currKey) || []) {
+        for (const srcGroup of model.byBranch.get(branchKey(curr.script, sourceNode)) || []) {
+          if (!visitedBack.has(srcGroup.key)) {
+            visitedBack.add(srcGroup.key);
+            queue.push(srcGroup);
+          }
+        }
+      }
+    }
+  }
+
+  const defaultSelections: Record<string, string> = {};
+  for (const group of model.groups) {
+    for (const segment of group.segments) {
+      if (segment.kind === 'choice' && segment.choice.options[0]) {
+        defaultSelections[segment.choice.id] = segment.choice.options[0].id;
+      }
+    }
+  }
+
+  const initialSelections: Record<string, string> = { ...defaultSelections, ...hitChoices };
+  const selections: Record<string, string> = { ...initialSelections, ...customSelections };
+
+  const rootGroups = model.groups.filter(
+    group => group.node === 'sequence:0' || !childTargets.has(branchKey(group.script, group.node)),
+  );
+  const roots = rootGroups.length ? rootGroups : model.groups;
+
+  const groups: StoryGroup[] = [];
+  const visited = new Set<string>();
+
+  function traverseFrom(startKeys: string[]) {
+    const pending = [...startKeys];
+    while (pending.length) {
+      const key = pending.shift()!;
+      const group = model.byKey.get(key);
+      if (!group || visited.has(key)) continue;
+      visited.add(key);
+      groups.push(group);
+
+      const targets: string[] = [];
+      const choices = group.segments.filter(segment => segment.kind === 'choice');
+      for (const segment of choices) {
+        if (segment.kind !== 'choice') continue;
+        const chosen =
+          segment.choice.options.find(opt => opt.id === selections[segment.choice.id]) ||
+          segment.choice.options[0];
+        if (chosen?.trigger) targets.push(chosen.trigger);
+      }
+      const continuation = model.continuations.get(branchKey(group.script, group.node)) || [];
+      if (!choices.length || targets.length === 0) {
+        for (const nextTarget of continuation) {
+          if (!targets.includes(nextTarget)) targets.push(nextTarget);
+        }
+      }
+
+      const nextKeys: string[] = [];
+      for (const target of targets) {
+        const next = model.byBranch.get(branchKey(group.script, target));
+        if (next) {
+          for (const item of next) {
+            if (!visited.has(item.key)) nextKeys.push(item.key);
+          }
+        }
+      }
+      if (nextKeys.length) {
+        pending.unshift(...nextKeys);
+      }
+    }
+  }
+
+  for (const root of roots) {
+    if (!visited.has(root.key)) {
+      traverseFrom([root.key]);
+    }
+  }
+
+  if (hitGroup && !visited.has(hitGroup.key) && Object.keys(customSelections).length === 0) {
+    traverseFrom([hitGroup.key]);
+  }
+
+  return { groups, selections, initialSelections };
+}
+

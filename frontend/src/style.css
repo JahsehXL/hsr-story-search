@@ -206,11 +206,30 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
 .reader-heading { padding: 16px 32px 14px; border-bottom: 1px solid var(--line-soft); background: var(--surface); flex-shrink: 0; }
 .reader-top-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 .reader-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.reader-back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--reader);
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+  transition: border-color 140ms, color 140ms, background 140ms;
+}
+.reader-back-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 .reader-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
 .reader-meta a { color: var(--accent); }
 .reader-meta a:hover { text-decoration: underline; }
-.version-label { color: var(--accent); font-weight: 500; padding: 2px 8px; border-radius: 4px; background: var(--accent-soft); }
-.version-label.unverified { color: var(--subtle); background: var(--surface-raised); }
+.locate-hit-button { color: var(--accent); font-weight: 500; }
+.version-label { color: var(--accent); font-weight: 600; padding: 2px 8px; border-radius: 4px; background: var(--accent-soft); border: 1px solid var(--accent-border); }
+.version-label.unverified { color: var(--subtle); background: var(--surface-raised); border-color: var(--line); }
 .reader-title-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 8px; }
 .reader-title-row h1 { font-size: 21px; font-weight: 600; line-height: 1.35; color: var(--text-strong); margin: 0; }
 .bookmark-button.is-saved { color: var(--accent); }
@@ -218,6 +237,7 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
 .reader-scroll { padding: 0 32px 28px; flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
 .story-flow { max-width: 880px; margin: 0 auto; }
 .reading-focusbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; font-size: 12px; color: var(--subtle); border-bottom: 1px solid var(--line-soft); margin-bottom: 8px; }
+.reading-focusbar-actions { display: flex; align-items: center; gap: 14px; }
 .reading-focusbar button { color: var(--accent); font-weight: 500; }
 
 /* Script-Book Dialogue Lines */

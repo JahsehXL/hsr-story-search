@@ -39,7 +39,7 @@ class Bootstrap(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=1000)
+    query: str = Field(default="", max_length=1000)
     filters: dict = Field(default_factory=dict)
     mode: str = "hybrid"
     limit: int = Field(default=30, ge=1, le=100)
@@ -312,7 +312,8 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             raise HTTPException(429, "搜索排队等待超时，请稍后重试", headers={"Retry-After": "2"})
         try:
             query = payload.query.strip()
-            if not query:
+            has_filters = any(bool(v) for v in (payload.filters or {}).values())
+            if not query and not has_filters:
                 raise ValueError("请输入搜索内容")
             if payload.mode not in {"text", "hybrid", "fuzzy"}:
                 raise ValueError("搜索模式无效")
@@ -330,7 +331,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             semantic = []
             notice = ""
             search_mode = "fuzzy" if payload.mode == "fuzzy" else "text"
-            if payload.mode == "hybrid":
+            if payload.mode == "hybrid" and query:
                 if runtime.embedding_status(path)["index_ready"]:
                     try:
                         semantic = runtime.semantic_search(path, query, payload.filters, limit=500, query_vector=payload.query_vector, visitor_key=visitor_key)

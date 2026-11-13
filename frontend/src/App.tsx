@@ -252,7 +252,7 @@ export default function App() {
     return () => { alive = false; };
   }, [readable, status?.data.snapshot]);
 
-  const selectResult = useCallback(async (result: Result, snapshot?: string, updateRoute = true, entire = false) => {
+  const selectResult = useCallback(async (result: Result, snapshot?: string, updateRoute = true) => {
     const generation = ++readerId.current;
     setSelected(result); setDetail(null); setReaderError('');
     if (updateRoute) {
@@ -268,25 +268,26 @@ export default function App() {
     setReading(true);
     const p = new URLSearchParams();
     if (result.line_id) p.set('line_id', result.line_id);
-    if (result.script && !entire) p.set('script', result.script);
     if (snapshot) p.set('snapshot', snapshot);
     try { const value = await request<MissionResponse>(`missions/${encodeURIComponent(result.mission_id)}?${p}`); if (generation === readerId.current) setDetail(value); }
     catch (err) { if (generation === readerId.current) setReaderError(errorText(err)); }
     finally { if (generation === readerId.current) setReading(false); }
   }, [searchedQuery]);
 
-  const runSearch = useCallback(async (value: string, offset = 0) => {
-    if (!value.trim()) { searchInput.current?.focus(); return; }
-    const criteria = offset > 0 ? activeSearch.current : { query: value.trim(), filters: { ...filters }, mode };
+  const runSearch = useCallback(async (value: string, offset = 0, overrideFilters?: Filters) => {
+    const activeFilters = overrideFilters ?? filters;
+    const hasFilter = Object.values(activeFilters).some(Boolean);
+    if (!value.trim() && !hasFilter) { searchInput.current?.focus(); return; }
+    const criteria = offset > 0 ? activeSearch.current : { query: value.trim(), filters: { ...activeFilters }, mode };
     const semanticContext = offset > 0 ? activeSemantic.current : status ? { snapshot: status.data.snapshot, embedding: status.embedding } : null;
-    if (criteria.mode === 'hybrid' && semanticContext && indexReady(semanticContext.embedding) && !visitorKey && !serverKeyReady(semanticContext.embedding)) {
+    if (criteria.mode === 'hybrid' && criteria.query && semanticContext && indexReady(semanticContext.embedding) && !visitorKey && !serverKeyReady(semanticContext.embedding)) {
       setShowVisitorKey(true);
       return;
     }
     const generation = ++searchId.current;
     setSearching(true); setSearchError('');
     try {
-      const prepared = criteria.mode === 'hybrid' && semanticContext ? await semanticClient.current.prepare(criteria.query, visitorKey, semanticContext) : {};
+      const prepared = criteria.mode === 'hybrid' && criteria.query && semanticContext ? await semanticClient.current.prepare(criteria.query, visitorKey, semanticContext) : {};
       if (generation !== searchId.current) return;
       const data = await searchRequest<SearchResponse>({ ...criteria, limit: 30, offset, snapshot: offset > 0 ? response?.snapshot : semanticContext?.snapshot || undefined }, prepared);
       if (generation !== searchId.current) return;
@@ -296,11 +297,22 @@ export default function App() {
         activeSearch.current = criteria;
         activeSemantic.current = semanticContext;
         setSelected(null); setDetail(null); readerId.current++;
-        history.replaceState(null, '', `#/search?q=${encodeURIComponent(value.trim())}`);
+        history.replaceState(null, '', criteria.query ? `#/search?q=${encodeURIComponent(criteria.query)}` : '#/search');
       }
     } catch (err) { if (generation === searchId.current) setSearchError(errorText(err)); }
     finally { if (generation === searchId.current) setSearching(false); }
   }, [filters, mode, response?.snapshot, status, visitorKey]);
+
+  const applyFilters = useCallback((nextFilters: Filters) => {
+    setFilters(nextFilters);
+    if (query.trim() || Object.values(nextFilters).some(Boolean)) {
+      void runSearch(query, 0, nextFilters);
+    } else {
+      setResponse(null);
+      setSelected(null);
+      setDetail(null);
+    }
+  }, [query, runSearch]);
 
   useEffect(() => {
     const synchronizeKey = (event: StorageEvent) => {
@@ -357,7 +369,6 @@ export default function App() {
     const generation = readerId.current;
     setReading(true);
     const p = new URLSearchParams({ offset: String((detail.offset || 0) + detail.lines.length), limit: '1000' });
-    if (selected.script) p.set('script', selected.script);
     if (detail.snapshot || response?.snapshot) p.set('snapshot', detail.snapshot || response!.snapshot);
     try { const extra = await request<MissionResponse>(`missions/${encodeURIComponent(selected.mission_id)}?${p}`); if (generation === readerId.current) setDetail(old => {
         if (!old) return extra;
@@ -380,7 +391,7 @@ export default function App() {
         <input ref={searchInput} value={query} onChange={e => setQuery(e.target.value)} placeholder={mode === 'hybrid' ? '描述你记得的人物、事件或情节…' : mode === 'fuzzy' ? '输入记得的大致文字，尝试近似匹配…' : '输入台词、任务名或角色（支持空格分词与角色别名）…'} aria-label="搜索剧情" maxLength={1000} />
         {query && <button type="button" className="icon-button clear-query" onClick={() => { setQuery(''); searchInput.current?.focus(); }} aria-label="清空输入" title="清空">×</button>}
         <kbd>Ctrl K</kbd>
-        <button className="primary search-submit" disabled={searching || !query.trim()}>{searching ? <span className="spinner" /> : '搜索'}<span aria-hidden="true">↗</span></button>
+        <button className="primary search-submit" disabled={searching || (!query.trim() && !Object.values(filters).some(Boolean))}>{searching ? <span className="spinner" /> : '搜索'}<span aria-hidden="true">↗</span></button>
       </form>
       <div className="search-toolbar">
         <div className="search-methods">
@@ -393,11 +404,11 @@ export default function App() {
         </div>
         <div className="search-options">
           <div className="filter-row">
-            <SelectField label="世界" value={filters.world} values={catalog.worlds} onChange={v => setFilters(old => ({ ...old, world: v }))} />
-            <SelectField label="版本" value={filters.version} values={catalog.versions} onChange={v => setFilters(old => ({ ...old, version: v }))} />
-            <SelectField label="任务类型" value={filters.type} values={catalog.types} onChange={v => setFilters(old => ({ ...old, type: v }))} />
-            <SelectField label="角色" value={filters.character} values={catalog.characters} searchable onChange={v => setFilters(old => ({ ...old, character: v }))} />
-            {Object.values(filters).some(Boolean) && <button type="button" className="text-button clear-filters" onClick={() => setFilters(emptyFilters)}>重置筛选</button>}
+            <SelectField label="世界" value={filters.world} values={catalog.worlds} onChange={v => applyFilters({ ...filters, world: v })} />
+            <SelectField label="版本" value={filters.version} values={catalog.versions} onChange={v => applyFilters({ ...filters, version: v })} />
+            <SelectField label="任务类型" value={filters.type} values={catalog.types} onChange={v => applyFilters({ ...filters, type: v })} />
+            <SelectField label="角色" value={filters.character} values={catalog.characters} searchable onChange={v => applyFilters({ ...filters, character: v })} />
+            {Object.values(filters).some(Boolean) && <button type="button" className="text-button clear-filters" onClick={() => applyFilters(emptyFilters)}>重置筛选</button>}
           </div>
         </div>
       </div>
@@ -423,7 +434,7 @@ export default function App() {
         </button>; })}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
       </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>
     </section>
-    <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={() => setSelected(null)} onVersionSave={saveVersion} onExpand={() => { if (selected) { const expanded = { ...selected, script: '', line_id: '' }; void selectResult(expanded, detail?.snapshot || response?.snapshot, true, true); } }} onMore={() => void moreContext()} />
+    <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={() => setSelected(null)} onVersionSave={saveVersion} onMore={() => void moreContext()} />
     </main>
     {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('')} /></Modal>}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}

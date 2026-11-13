@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStoryModel, focusStory, resolveStory, shareStoryAnchor, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
+import { buildStoryModel, focusStory, resolveFullMissionStory, resolveStory, shareStoryAnchor, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
 import type { DialogueLine } from '../src/types.ts';
 
 function line(id: string, sequence: number, branch: string, values: Partial<DialogueLine> = {}): DialogueLine {
@@ -174,3 +174,23 @@ test('withDefaultChoices auto-selects the first option while preserving explicit
   assert.equal(hitB.selections['answer-a'], 'answer-b');
   assert.deepEqual(resolveStory(model, hitB).groups.map(group => group.sequence), [0, 2]);
 });
+
+test('resolveFullMissionStory renders all root scenes across scripts and selects ancestor choices leading to hit', () => {
+  const lines = [
+    line('s1-root', 0, '', { script: 'DS01' }),
+    line('s2-root', 0, '', { script: 'Act02' }),
+    line('s2-opt1', 0, '', { script: 'Act02', kind: 'option', trigger: 'b1' }),
+    line('s2-opt2', 0, '', { script: 'Act02', kind: 'option', trigger: 'b2' }),
+    line('s2-b1', 1, 'b1', { script: 'Act02' }),
+    line('s2-b2', 2, 'b2', { script: 'Act02' }),
+    line('s3-root', 0, '', { script: 'DS03' }),
+  ];
+  const model = buildStoryModel(lines);
+  const full = resolveFullMissionStory(model, 's2-b2');
+  assert.deepEqual(full.groups.map(g => g.lines[0].id), ['s1-root', 's2-root', 's2-b2', 's3-root']);
+  assert.equal(full.selections['s2-opt1'], 's2-opt2');
+
+  const switched = resolveFullMissionStory(model, 's2-b2', { 's2-opt1': 's2-opt1' });
+  assert.deepEqual(switched.groups.map(g => g.lines[0].id), ['s1-root', 's2-root', 's2-b1', 's3-root']);
+});
+

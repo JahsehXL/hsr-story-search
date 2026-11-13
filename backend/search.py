@@ -104,21 +104,52 @@ def _snippet(text: str, query: str) -> str:
     return ("…" if start else "") + clean[start:start + 185] + ("…" if start + 185 < len(clean) else "")
 
 
-def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False) -> list[dict]:
+def _expand_character_filter(filters: dict | None) -> list[str]:
+    if not filters:
+        return []
+    character = filters.get("characters") or filters.get("character")
+    if not character:
+        return []
+    raw_values = character if isinstance(character, list) else [character]
+    expanded: list[str] = []
+    for item in raw_values:
+        clean = str(item).strip()
+        if not clean:
+            continue
+        canonical = ALIASES.get(clean, clean)
+        for candidate in (clean, canonical):
+            if candidate and candidate not in expanded:
+                expanded.append(candidate)
+    return expanded
+
+
+def _speaker_matches_filter(speaker: str, expanded_chars: list[str]) -> bool:
+    if not expanded_chars:
+        return True
+    spk = (speaker or "").strip()
+    return any(spk == c or spk.startswith(c) for c in expanded_chars)
+
+
+def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False, filters: dict | None = None) -> list[dict]:
     if not ids:
         return []
+    expanded_chars = _expand_character_filter(filters)
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(f"""SELECT c.id chunk_id,c.mission_id,c.script,c.branch,c.text,c.input_text,
         m.name mission_name,m.chapter,m.world,m.type,m.version,m.version_status,m.version_source
         FROM chunks c JOIN missions m ON m.id=c.mission_id WHERE c.id IN ({placeholders})
         AND c.script!='unlinked' AND c.mission_id!='unlinked'""", ids).fetchall()
     results = []
-    variants = expand_query(query)
+    variants = expand_query(query) if query else [""]
     for row in rows:
         item = dict(row)
         lines = conn.execute("SELECT id,speaker,search_text,kind FROM lines WHERE chunk_id=? ORDER BY position", (item["chunk_id"],)).fetchall()
         line_scores = []
         for line in lines:
+            spk_ok = 1 if _speaker_matches_filter(line["speaker"], expanded_chars) else 0
+            if not query:
+                line_scores.append((spk_ok, 0.0, 0, 0, 0))
+                continue
             scores = []
             line_text_lower = line["search_text"].lower()
             line_compact = _compact(line["search_text"])
@@ -126,27 +157,30 @@ def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False) -> lis
             for variant in variants:
                 score = _score_fields(variant, {"text": line["search_text"], "speaker": line["speaker"]}, allow_fuzzy)[0]
                 words = re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", variant.lower())
-                # Keywords may span adjacent lines in the same scene. Focus a line
-                # containing search terms instead of an unrelated first line.
                 coverage = sum(len(word) for word in words if word in line_text_lower or word in line_compact)
                 speaker_cov = sum(len(word) for word in words if word in speaker_compact)
                 sub_coverage = sum(len(term) for term in _subterms(variant) if term in line_compact or term in speaker_compact)
-                scores.append((score, coverage, speaker_cov, sub_coverage))
+                scores.append((spk_ok, score, coverage, speaker_cov, sub_coverage))
             line_scores.append(max(scores))
         match = lines[max(range(len(lines)), key=line_scores.__getitem__)] if lines else None
         item["line_id"] = match["id"] if match else ""
         item["speaker"] = match["speaker"] if match else ""
         item["text"] = _snippet(match["search_text"] if match else item["text"], query)
         item["kind"] = match["kind"] if match else "dialogue"
-        fields = {
-            "text": match["search_text"] if match else "",
-            "speaker": item["speaker"], "mission": item["mission_name"],
-            "metadata": item["world"] + " " + item["chapter"],
-        }
-        best_match = max((_score_fields(variant, fields, allow_fuzzy) for variant in variants), key=lambda value: value[0])
-        item["matched_field"] = best_match[2]
-        item["match_type"] = "keyword"
-        item["score"] = 0.0
+        if not query:
+            item["matched_field"] = "speaker" if expanded_chars else "metadata"
+            item["match_type"] = "exact"
+            item["score"] = 1.0
+        else:
+            fields = {
+                "text": match["search_text"] if match else "",
+                "speaker": item["speaker"], "mission": item["mission_name"],
+                "metadata": item["world"] + " " + item["chapter"],
+            }
+            best_match = max((_score_fields(variant, fields, allow_fuzzy) for variant in variants), key=lambda value: value[0])
+            item["matched_field"] = best_match[2]
+            item["match_type"] = "keyword"
+            item["score"] = 0.0
         item.pop("input_text")
         results.append(item)
     by_id = {item["chunk_id"]: item for item in results}
@@ -206,12 +240,21 @@ def _score_fields(query: str, fields: dict[str, str], allow_fuzzy: bool = False)
 def lexical_search(path: Path | str, query: str, filters: dict | None = None, limit: int = 100,
                    *, allow_fuzzy: bool = False) -> list[dict]:
     query = normalize_text(query)[:500]
-    if not query:
-        return []
     filters = filters or {}
     limit = max(1, min(limit, 500))
-    variants = expand_query(query)
     condition, filter_args = filter_sql(filters)
+    if not query:
+        if not any(bool(v) for v in filters.values()):
+            return []
+        with open_db(path) as conn:
+            rows = conn.execute(f"""SELECT c.id FROM chunks c JOIN missions m ON m.id=c.mission_id
+                WHERE 1=1 {condition}
+                ORDER BY CASE WHEN m.type='开拓任务' THEN 0 WHEN m.type='Gap' THEN 1 WHEN m.type='同行任务' THEN 2 WHEN m.type='支线任务' THEN 3 ELSE 4 END,
+                m.version DESC, c.id LIMIT ?""", filter_args + [limit]).fetchall()
+            ordered = [r[0] for r in rows]
+            return _results(conn, ordered, "", False, filters)
+    variants = expand_query(query)
+    expanded_chars = _expand_character_filter(filters)
     candidates: dict[int, tuple[float, str, str]] = {}
     fts_ranks: dict[int, float] = {}
     with open_db(path) as conn:
@@ -252,7 +295,7 @@ def lexical_search(path: Path | str, query: str, filters: dict | None = None, li
         if not candidate_ids:
             return []
         placeholders = ",".join("?" for _ in candidate_ids)
-        rows = conn.execute(f"""SELECT c.id,m.name,m.world,m.chapter,m.type,
+        rows = conn.execute(f"""SELECT c.id,c.text,m.name,m.world,m.chapter,m.type,
             (SELECT group_concat(search_text,'\n') FROM lines WHERE chunk_id=c.id) body,
             (SELECT group_concat(DISTINCT speaker) FROM lines WHERE chunk_id=c.id) speakers
             FROM chunks c JOIN missions m ON m.id=c.mission_id WHERE c.id IN ({placeholders})""", list(candidate_ids)).fetchall()
@@ -262,11 +305,20 @@ def lexical_search(path: Path | str, query: str, filters: dict | None = None, li
             score, match_type, matched_field = max((_score_fields(variant, fields, allow_fuzzy) for variant in variants), key=lambda value: value[0])
             if score > 0:
                 line_bonus = max((_score_fields(variant, {"text": line_str}, allow_fuzzy)[0] for variant in variants for line_str in body_text.split("\n") if line_str), default=0.0)
+                char_bonus = 0.0
+                if expanded_chars:
+                    for raw_line in (row["text"] or "").split("\n"):
+                        if "：" in raw_line:
+                            spk, ltxt = raw_line.split("：", 1)
+                            if _speaker_matches_filter(spk, expanded_chars):
+                                if max((_score_fields(variant, {"text": ltxt}, allow_fuzzy)[0] for variant in variants), default=0.0) > 0:
+                                    char_bonus = 35.0
+                                    break
                 type_bonus = 1.5 if row["type"] and row["type"] != "其他任务" else 0.0
-                bonus = (4.0 if line_bonus >= 265.0 else 0.0) + type_bonus + min(3.9, max(0.0, -fts_ranks.get(row["id"], 0.0)) * 0.15)
+                bonus = (4.0 if line_bonus >= 265.0 else 0.0) + char_bonus + type_bonus + min(3.9, max(0.0, -fts_ranks.get(row["id"], 0.0)) * 0.15)
                 candidates[row["id"]] = (score + bonus, match_type, matched_field)
         ordered = sorted(candidates, key=lambda identifier: (-candidates[identifier][0], identifier))[:limit]
-        results = _results(conn, ordered, query, allow_fuzzy)
+        results = _results(conn, ordered, query, allow_fuzzy, filters)
         for item in results:
             item["score"], item["match_type"], item["matched_field"] = candidates[item["chunk_id"]]
         return results
