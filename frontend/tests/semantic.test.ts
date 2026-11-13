@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSemanticSearchClient, indexReady, loadVisitorKey, normalizeVisitorKey, saveVisitorKey, serverKeyReady, SILICONFLOW_EMBEDDINGS_URL, validateQueryVector, VISITOR_KEY_STORAGE } from '../src/semantic.ts';
+import { createSemanticSearchClient, indexReady, loadVisitorEndpoint, loadVisitorKey, normalizeVisitorEndpoint, normalizeVisitorKey, saveVisitorEndpoint, saveVisitorKey, serverKeyReady, SILICONFLOW_EMBEDDINGS_URL, validateQueryVector, VISITOR_ENDPOINT_STORAGE, VISITOR_KEY_STORAGE } from '../src/semantic.ts';
 import type { SemanticContext } from '../src/semantic.ts';
 import { searchRequest } from '../src/api.ts';
 
@@ -211,4 +211,28 @@ test('aborting a superseded search cancels the API fetch and preserves cancellat
     if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
     else Reflect.deleteProperty(globalThis, 'document');
   }
+});
+
+test('custom compatible endpoint normalizes /embeddings and never falls back to server proxy', async () => {
+  assert.equal(normalizeVisitorEndpoint(''), '');
+  assert.equal(normalizeVisitorEndpoint('https://api.example.com/v1/'), 'https://api.example.com/v1/embeddings');
+  assert.equal(normalizeVisitorEndpoint('https://api.example.com/v1/embeddings?foo=1'), 'https://api.example.com/v1/embeddings');
+  assert.equal(normalizeVisitorEndpoint('http://127.0.0.1:11434/v1'), 'http://127.0.0.1:11434/v1/embeddings');
+  assert.throws(() => normalizeVisitorEndpoint('http://remote.example.com/v1'), /https:\/\//);
+
+  const local = storage();
+  assert.equal(saveVisitorEndpoint(local, 'https://api.example.com/v1'), 'https://api.example.com/v1/embeddings');
+  assert.equal(local.getItem(VISITOR_ENDPOINT_STORAGE), 'https://api.example.com/v1/embeddings');
+  assert.equal(loadVisitorEndpoint(local), 'https://api.example.com/v1/embeddings');
+  saveVisitorEndpoint(local, '');
+  assert.equal(local.values.size, 0);
+
+  const direct = createSemanticSearchClient(async url => {
+    assert.equal(url, 'https://api.example.com/v1/embeddings');
+    return vectorResponse();
+  });
+  assert.deepEqual(await direct.prepare('旅途', 'custom-key', context(), 'https://api.example.com/v1'), { queryVector: [1, 0, 0] });
+
+  const failing = createSemanticSearchClient(async () => new Response('{}', { status: 401 }));
+  await assert.rejects(failing.prepare('旅途', 'custom-key', context(), 'https://api.example.com/v1'), /直连自定义接口失败/);
 });

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { apiUrl, downloadJson, post, request, searchRequest } from './api';
-import { createSemanticSearchClient, indexReady, loadVisitorKey, saveVisitorKey, serverKeyReady, VISITOR_KEY_STORAGE } from './semantic';
+import { createSemanticSearchClient, indexReady, loadVisitorEndpoint, loadVisitorKey, saveVisitorEndpoint, saveVisitorKey, serverKeyReady, VISITOR_ENDPOINT_STORAGE, VISITOR_KEY_STORAGE } from './semantic';
 import type { SemanticContext } from './semantic';
 import Reader from './Reader';
 import { cleanMissionName, speakerName, errorText, versionText, Highlight, Empty } from './presentation';
@@ -13,6 +13,9 @@ let bootstrapPromise: Promise<void> | undefined;
 
 function storedVisitorKey(): string {
   try { return loadVisitorKey(localStorage); } catch { return ''; }
+}
+function storedVisitorEndpoint(): string {
+  try { return loadVisitorEndpoint(localStorage); } catch { return ''; }
 }
 
 function bootstrapSession(): Promise<void> {
@@ -167,17 +170,26 @@ function Login({ admin = false, local = false, onSuccess }: { admin?: boolean; l
   </form>;
 }
 
-function VisitorKeyForm({ initialKey, model, save, clear }: { initialKey: string; model: string; save: (key: string) => void; clear: () => void }) {
+function VisitorKeyForm({ initialKey, initialEndpoint, model, save, clear }: { initialKey: string; initialEndpoint: string; model: string; save: (key: string, endpoint: string) => void; clear: () => void }) {
   const [key, setKey] = useState(initialKey);
+  const [endpoint, setEndpoint] = useState(initialEndpoint);
   const [error, setError] = useState('');
+  const targetModel = model || 'BAAI/bge-m3';
   return <form className="visitor-key-form" onSubmit={event => {
     event.preventDefault(); setError('');
-    try { save(key); } catch (failure) { setError(errorText(failure)); }
+    try { save(key, endpoint); } catch (failure) { setError(errorText(failure)); }
   }}>
-    <p>语义搜索使用自己的硅基流动 API Key。<a href="https://cloud.siliconflow.cn" target="_blank" rel="noreferrer">注册或获取密钥 ↗</a></p>
-    <p>{model === 'BAAI/bge-m3' ? '当前使用硅基流动免费模型 BAAI/bge-m3，政策以服务商为准。' : `当前索引模型为 ${model}。`}<a href="https://www.siliconflow.cn/pricing" target="_blank" rel="noreferrer">查看模型价格 ↗</a></p>
-    <label className="field"><span>硅基流动 API Key</span><input type="password" autoComplete="new-password" value={key} onChange={event => setKey(event.target.value)} placeholder="粘贴自己的 API Key" aria-label="语义搜索 API Key" maxLength={4096} /></label>
-    <p className="key-storage-note">密钥保存在当前浏览器，可随时修改或清除。查询优先直连硅基流动，直连失败时由本站服务器仅在内存中代发本次查询。</p>
+    <div className="visitor-key-steps">
+      <strong>获取 API Key 步骤（以硅基流动为例）：</strong><br />
+      打开<a href="https://cloud.siliconflow.cn" target="_blank" rel="noreferrer">硅基流动控制台 ↗</a> → 注册 / 登录账号 → 完成实名认证 → 在「API 密钥」页面新建并复制 Key。
+    </div>
+    <p>不强求必须使用硅基流动，其他兼容 OpenAI Embeddings 接口的平台也可使用，但<strong>必须使用 <code>{targetModel}</code> 模型</strong>（与当前剧情向量索引一致）。默认使用硅基流动仅因该模型在平台免费，具体以服务商政策为准。<a href="https://www.siliconflow.cn/pricing" target="_blank" rel="noreferrer">查看模型价格 ↗</a></p>
+    <label className="field"><span>API Key</span><input type="password" autoComplete="new-password" value={key} onChange={event => setKey(event.target.value)} placeholder={`粘贴支持 ${targetModel} 的 API Key`} aria-label="语义搜索 API Key" maxLength={4096} /></label>
+    <details className="custom-endpoint-box" open={Boolean(initialEndpoint)}>
+      <summary>其他兼容平台接口地址（可选，留空默认使用硅基流动）</summary>
+      <label className="field"><span>Embeddings 接口地址</span><input type="url" value={endpoint} onChange={event => setEndpoint(event.target.value)} placeholder="留空默认 https://api.siliconflow.cn/v1/embeddings" aria-label="自定义 Embeddings 接口地址" maxLength={1024} /></label>
+    </details>
+    <p className="key-storage-note">密钥仅保存在当前浏览器，可随时修改或清除。默认（硅基流动）优先由浏览器直连，直连失败时才由本站服务器在内存中代发；填写其他接口地址时仅限浏览器直连。</p>
     <div className="form-actions"><button className="primary">保存密钥</button><button className="secondary" type="button" onClick={() => { try { clear(); } catch (failure) { setError(errorText(failure)); } }}>清除密钥</button></div>
     {error && <p className="error-message" role="alert">{error}</p>}
   </form>;
@@ -205,6 +217,7 @@ export default function App() {
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showVisitorKey, setShowVisitorKey] = useState(false);
   const [visitorKey, setVisitorKey] = useState(storedVisitorKey);
+  const [visitorEndpoint, setVisitorEndpoint] = useState(storedVisitorEndpoint);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => { try { return JSON.parse(localStorage.getItem('hsr-bookmarks') || '[]'); } catch { return []; } });
   const [theme, setTheme] = useState(document.documentElement.dataset.theme || 'dark');
   const [toast, setToast] = useState('');
@@ -218,12 +231,14 @@ export default function App() {
   const activeSemantic = useRef<SemanticContext | null>(null);
   const semanticClient = useRef(createSemanticSearchClient());
 
-  function updateVisitorKey(value: string) {
+  function updateVisitorKey(value: string, endpointValue = '') {
+    const endpoint = saveVisitorEndpoint(localStorage, endpointValue);
     const key = saveVisitorKey(localStorage, value);
     semanticClient.current.clear();
     searchId.current++;
     setSearching(false);
     setVisitorKey(key);
+    setVisitorEndpoint(endpoint);
     setShowVisitorKey(false);
     setToast(key ? '语义搜索密钥已保存，可开始搜索' : '已清除当前浏览器的语义搜索密钥');
   }
@@ -313,7 +328,7 @@ export default function App() {
     searchController.current = controller;
     setSearching(true); setSearchError('');
     try {
-      const prepared = criteria.mode === 'hybrid' && criteria.query && semanticContext ? await semanticClient.current.prepare(criteria.query, visitorKey, semanticContext) : {};
+      const prepared = criteria.mode === 'hybrid' && criteria.query && semanticContext ? await semanticClient.current.prepare(criteria.query, visitorKey, semanticContext, visitorEndpoint) : {};
       if (generation !== searchId.current) return;
       const data = await searchRequest<SearchResponse>({ ...criteria, limit: 30, offset, snapshot: offset > 0 ? response?.snapshot : semanticContext?.snapshot || undefined }, prepared, controller.signal);
       if (generation !== searchId.current) return;
@@ -327,7 +342,7 @@ export default function App() {
       }
     } catch (err) { if (generation === searchId.current) setSearchError(errorText(err)); }
     finally { if (generation === searchId.current) setSearching(false); }
-  }, [filters, mode, response?.snapshot, status, visitorKey, clearReader]);
+  }, [filters, mode, response?.snapshot, status, visitorKey, visitorEndpoint, clearReader]);
 
   const applyFilters = useCallback((nextFilters: Filters) => {
     setFilters(nextFilters);
@@ -344,11 +359,12 @@ export default function App() {
 
   useEffect(() => {
     const synchronizeKey = (event: StorageEvent) => {
-      if (event.key !== VISITOR_KEY_STORAGE && event.key !== null) return;
+      if (event.key !== VISITOR_KEY_STORAGE && event.key !== VISITOR_ENDPOINT_STORAGE && event.key !== null) return;
       semanticClient.current.clear();
       searchId.current++;
       setSearching(false);
       setVisitorKey(storedVisitorKey());
+      setVisitorEndpoint(storedVisitorEndpoint());
     };
     window.addEventListener('storage', synchronizeKey);
     return () => window.removeEventListener('storage', synchronizeKey);
@@ -413,7 +429,7 @@ export default function App() {
 
   return <div className={`app-shell ${selected ? 'has-selection' : ''}`}>
     <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); searchId.current++; searchController.current?.abort(); setSearching(false); clearReader(); setResponse(null); setQuery(''); setSearchedQuery(''); history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
-      <div className="header-actions"><span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button><button className="icon-button" onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} title="切换主题">{theme === 'dark' ? '☼' : '☾'}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
+      <div className="header-actions">{status.mode === 'server' && <a className="header-button" href="/" aria-label="返回首页" title="返回首页"><span aria-hidden="true">←</span><span>返回首页</span></a>}<span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button><button className="icon-button" onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} title="切换主题">{theme === 'dark' ? '☼' : '☾'}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
     </header>
     <section className="search-section">
       <form className="search-form" onSubmit={e => { e.preventDefault(); void runSearch(query); }}>
@@ -466,7 +482,7 @@ export default function App() {
     </section>
     <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={clearReader} onVersionSave={saveVersion} onMore={() => void moreContext()} />
     </main>
-    {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('')} /></Modal>}
+    {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} initialEndpoint={visitorEndpoint} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('', '')} /></Modal>}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}
     {showSettings && <Modal title="档案管理" close={() => setShowSettings(false)} wide><Admin status={status} onRefresh={() => refresh()} onToast={setToast} /></Modal>}
     {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setSearchedQuery(bookmark.query); setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{bookmark.result.text || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
