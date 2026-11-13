@@ -653,23 +653,88 @@ class Runtime:
         # Scaling preserves cosine similarity and safely fits every finite input into float32.
         scale = max(abs(value) for value in vector)
         vector = [value / scale for value in vector]
-        from .search import filter_sql
+        from .search import KNOWN_ENTITIES, _compact, _extract_content_terms, _results, expand_query, filter_sql
+        from .data import normalize_text, version_sort_key
         condition, arguments = filter_sql(filters)
         blob = sqlite_vec.serialize_float32(vector)
+        total_indexed = int(meta.get("count", 0))
+        fetch_k = min(max(limit * 3, 400), 1200) if total_indexed > 20 else limit
         with db_connect(path) as connection:
             if condition:
                 sql = "SELECT chunk_id,distance FROM chunk_vectors WHERE embedding MATCH ? AND k=? AND chunk_id IN (SELECT c.id FROM chunks c JOIN missions m ON m.id=c.mission_id WHERE 1=1 " + condition + ") ORDER BY distance"
-                rows = connection.execute(sql, (blob, limit, *arguments)).fetchall()
+                rows = connection.execute(sql, (blob, fetch_k, *arguments)).fetchall()
             else:
-                rows = connection.execute("SELECT chunk_id,distance FROM chunk_vectors WHERE embedding MATCH ? AND k=? ORDER BY distance", (blob, limit)).fetchall()
-        from .search import get_chunks
-        results = {item["chunk_id"]: item for item in get_chunks(path, [row["chunk_id"] for row in rows], query)}
-        output = []
+                rows = connection.execute("SELECT chunk_id,distance FROM chunk_vectors WHERE embedding MATCH ? AND k=? ORDER BY distance", (blob, fetch_k)).fetchall()
+            if not rows:
+                return []
+            chunk_ids = [row["chunk_id"] for row in rows]
+            results = {item["chunk_id"]: item for item in _results(connection, chunk_ids, normalize_text(query), False, filters)}
+            if total_indexed <= 20:
+                output = []
+                for row in rows:
+                    item = results.get(row["chunk_id"])
+                    if item:
+                        item.update(match_type="semantic", score=1 - row["distance"])
+                        output.append(item)
+                return output[:limit]
+            placeholders = ",".join("?" for _ in chunk_ids)
+            raw_texts = {
+                r[0]: (r[1] or "")
+                for r in connection.execute(f"SELECT id, text FROM chunks WHERE id IN ({placeholders})", chunk_ids)
+            }
+        content_terms: list[str] = []
+        for variant in expand_query(query):
+            for term in _extract_content_terms(variant):
+                if term not in content_terms:
+                    content_terms.append(term)
+        entity_terms = [t for t in content_terms if t in KNOWN_ENTITIES]
+        topic_terms = [t for t in content_terms if t not in KNOWN_ENTITIES]
+        scored_items = []
         for row in rows:
-            item = results.get(row["chunk_id"])
-            if item:
-                item.update(match_type="semantic", score=1 - row["distance"])
-                output.append(item)
+            cid = row["chunk_id"]
+            item = results.get(cid)
+            if not item:
+                continue
+            sim = 1.0 - float(row["distance"])
+            full_text = raw_texts.get(cid, "")
+            line_count = full_text.count("\n") + 1 if full_text else 1
+            adj = sim
+            if item.get("kind") == "option" and line_count == 1:
+                adj -= 0.075
+            elif line_count >= 3 and len(full_text) >= 60:
+                adj += 0.025
+            mtype = item.get("type", "")
+            if mtype in {"开拓任务", "Gap", "同行任务"}:
+                adj += 0.02
+            elif mtype == "支线任务":
+                adj += 0.006
+            elif mtype == "其他任务":
+                adj -= 0.025
+            if content_terms:
+                haystack = _compact(full_text + " " + item.get("mission_name", "") + " " + item.get("chapter", ""))
+                line_haystack = _compact(item.get("speaker", "") + " " + item.get("text", ""))
+                ent_ratio = (sum(1 for t in entity_terms if t in haystack) / len(entity_terms)) if entity_terms else 0.0
+                top_ratio = (sum(1 for t in topic_terms if t in haystack) / len(topic_terms)) if topic_terms else 0.0
+                line_top_ratio = (sum(1 for t in topic_terms if t in line_haystack) / len(topic_terms)) if topic_terms else 0.0
+                adj += 0.055 * ent_ratio + 0.13 * top_ratio + 0.035 * line_top_ratio
+                if topic_terms and top_ratio == 0.0:
+                    adj -= 0.035
+            ver_maj, ver_min = version_sort_key(item.get("version", ""))
+            adj += ver_maj * 0.0008 + ver_min * 0.00008
+            item_copy = dict(item)
+            item_copy.update(match_type="semantic", score=round(adj, 6))
+            scored_items.append(item_copy)
+        scored_items.sort(key=lambda x: x["score"], reverse=True)
+        output = []
+        seen_dedup = set()
+        for item in scored_items:
+            dedup_key = (item.get("mission_id"), item.get("speaker"), item.get("text"))
+            if dedup_key in seen_dedup:
+                continue
+            seen_dedup.add(dedup_key)
+            output.append(item)
+            if len(output) >= limit:
+                break
         return output
 
     def fetch_update_manifest(self) -> dict:

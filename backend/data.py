@@ -110,6 +110,7 @@ class DatasetBuilder:
         self.chunk_count = 0
         self.line_count = 0
         self.referenced_performance: dict[str, set[str]] = {}
+        self.perf_paths: dict[str, tuple[str, str]] = {}
 
     def resolve(self, value: object) -> str:
         if isinstance(value, dict):
@@ -138,6 +139,18 @@ class DatasetBuilder:
                 "speaker": normalize_text(self.resolve(row.get("TextmapTalkSentenceName"))) or "开拓者",
                 "text": text,
             }
+        for name in ("PerformanceA.json", "PerformanceC.json", "PerformanceCG.json", "PerformanceD.json", "PerformanceDS.json", "PerformanceE.json"):
+            for row in read_records(self.root / "ExcelOutput" / name):
+                pid = str(row.get("PerformanceID", ""))
+                path = str(row.get("PerformancePath", ""))
+                if len(pid) == 9 and pid.isdigit() and "Mission/" in path:
+                    parts = path.split("/")
+                    if "Mission" in parts:
+                        mid = parts[parts.index("Mission") + 1]
+                        if pid[1] == "0":
+                            self.perf_paths.setdefault(pid[0] + pid[2] + pid[4:9], (mid, path))
+                        if pid.startswith("103"):
+                            self.perf_paths.setdefault(pid[:5] + pid[-2:], (mid, path))
 
     def add_mission(self, mission_id: str, details: dict | None = None) -> None:
         if mission_id in self.missions:
@@ -284,6 +297,98 @@ class DatasetBuilder:
                     if line:
                         self.save_lines([line])
 
+    def import_timeline_sentences(self) -> None:
+        from collections import defaultdict
+        def _eligible(mid: str) -> bool:
+            m = self.missions.get(mid)
+            if not m or len(mid) != 7 or not mid.isdigit():
+                return False
+            if mid[1] == "0" and mid[3] == "4":
+                return True
+            if mid.startswith(("103", "104", "105", "202", "203", "204", "205")) and m.get("type") in {"开拓任务", "Gap", "同行任务"}:
+                return True
+            return False
+        p5_to_mid: dict[str, str] = {}
+        for mid in sorted(self.missions):
+            if not _eligible(mid):
+                continue
+            if mid[1] == "0" and mid[3] in {"3", "4"}:
+                p5_to_mid.setdefault(mid[0] + mid[2] + mid[4:], mid)
+            if mid.startswith("103"):
+                p5_to_mid.setdefault(mid[:5], mid)
+        existing_p7: dict[str, str] = {}
+        for p7, mid in self.conn.execute("SELECT DISTINCT substr(sentence_id,1,7), mission_id FROM lines WHERE length(sentence_id)=9"):
+            if p7 and p7.isdigit() and _eligible(mid) and p7[:5] in p5_to_mid:
+                existing_p7.setdefault(p7, mid)
+        unused_by_p7: dict[str, list[str]] = defaultdict(list)
+        for sid in sorted(self.sentences, key=lambda s: int(s) if s.isdigit() else 0):
+            if sid not in self.used_sentences and len(sid) == 9 and sid.isdigit():
+                p7 = sid[:7]
+                if p7 in existing_p7 or p7[:5] in p5_to_mid or (p7 in self.perf_paths and _eligible(self.perf_paths[p7][0])):
+                    unused_by_p7[p7].append(sid)
+        for p7 in sorted(unused_by_p7):
+            sids = unused_by_p7[p7]
+            mid = existing_p7.get(p7)
+            perf_script = ""
+            if p7 in self.perf_paths and _eligible(self.perf_paths[p7][0]):
+                if not mid:
+                    mid = self.perf_paths[p7][0]
+                if self.perf_paths[p7][0] == mid:
+                    perf_script = self.perf_paths[p7][1]
+            if not mid:
+                mid = p5_to_mid.get(p7[:5], "")
+            if not mid or not _eligible(mid):
+                continue
+            existing = self.conn.execute(
+                "SELECT sentence_id, script, sequence, position, branch, kind FROM lines WHERE mission_id=? AND sentence_id LIKE ? ORDER BY CAST(sentence_id AS INTEGER)",
+                (mid, f"{p7}%"),
+            ).fetchall()
+            if existing:
+                first_sid = int(existing[0]["sentence_id"])
+                base_script = existing[0]["script"]
+                grouped: dict[tuple[str, int, str], list[dict]] = defaultdict(list)
+                before_sids = [sid for sid in sids if int(sid) < first_sid]
+                start_pos = 1
+                if existing[0]["sequence"] == 0 and existing[0]["branch"] == "" and existing[0]["position"] <= len(before_sids):
+                    start_pos = existing[0]["position"] - len(before_sids)
+                for idx, sid in enumerate(before_sids):
+                    line = self.make_line(sid, mid, base_script, 0, start_pos + idx, "", "dialogue")
+                    if line:
+                        grouped[(base_script, 0, "")].append(line)
+                non_option_anchors = [row for row in existing if row["kind"] != "option"]
+                for sid in sids:
+                    sid_int = int(sid)
+                    if sid_int < first_sid:
+                        continue
+                    anchor = None
+                    for row in non_option_anchors:
+                        if int(row["sentence_id"]) < sid_int:
+                            anchor = row
+                        else:
+                            break
+                    if anchor is None:
+                        for row in existing:
+                            if int(row["sentence_id"]) < sid_int:
+                                anchor = row
+                            else:
+                                break
+                    if anchor is not None:
+                        pos = int(anchor["position"]) + (sid_int - int(anchor["sentence_id"]))
+                        key = (anchor["script"], int(anchor["sequence"]), anchor["branch"])
+                        line = self.make_line(sid, mid, key[0], key[1], pos, key[2], "dialogue")
+                        if line:
+                            grouped[key].append(line)
+                for key_lines in grouped.values():
+                    self.save_lines(key_lines)
+            else:
+                script = perf_script or f"Story/Discussion/Mission/{mid}/DS{mid}{p7[-2:]}.json"
+                lines = []
+                for idx, sid in enumerate(sids):
+                    line = self.make_line(sid, mid, script, 0, idx, "", "dialogue")
+                    if line:
+                        lines.append(line)
+                self.save_lines(lines)
+
     def save_recalls(self) -> None:
         for row in read_records(self.root / "ExcelOutput/PerformanceRecallData.json"):
             performance_id = str(row.get("PerformanceID", ""))
@@ -329,6 +434,8 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
             if index % 200 == 0 or index == len(files):
                 conn.commit()
                 report("scripts", index, len(files), f"已解析 {index} / {len(files)} 个剧情脚本")
+        builder.import_timeline_sentences()
+        conn.commit()
         report("unlinked", 0, 1, "统计未关联文字及整理回顾候选")
         unlinked_sentence_count = len(set(builder.sentences) - builder.used_sentences)
         builder.save_recalls()
@@ -366,14 +473,24 @@ def story_counts(conn: sqlite3.Connection) -> dict:
     return counts
 
 
+def version_sort_key(version: str) -> tuple[int, int]:
+    parts = re.findall(r"\d+", str(version or ""))
+    if len(parts) >= 2:
+        return (int(parts[0]), int(parts[1]))
+    if len(parts) == 1:
+        return (int(parts[0]), 0)
+    return (0, 0)
+
+
 def get_catalog(path: Path | str) -> dict:
     with open_db(path) as conn:
         info = {row["key"]: json.loads(row["value"]) for row in conn.execute("SELECT * FROM info")}
         info.update(story_counts(conn))
         result = {"stats": info}
         result["missions"] = [dict(row) for row in conn.execute("SELECT m.* FROM missions m JOIN (SELECT DISTINCT mission_id FROM chunks WHERE script!='unlinked' AND mission_id!='unlinked') story ON story.mission_id=m.id ORDER BY m.id")]
-        for key, column in (("worlds", "world"), ("types", "type"), ("versions", "version")):
+        for key, column in (("worlds", "world"), ("types", "type")):
             result[key] = sorted({mission[column] for mission in result["missions"] if mission[column]})
+        result["versions"] = sorted({mission["version"] for mission in result["missions"] if mission["version"]}, key=version_sort_key, reverse=True)
         result["characters"] = [row[0] for row in conn.execute("SELECT speaker FROM lines WHERE script!='unlinked' AND mission_id!='unlinked' GROUP BY speaker ORDER BY count(*) DESC LIMIT 400")]
         return result
 

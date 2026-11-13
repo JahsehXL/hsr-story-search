@@ -326,6 +326,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             visitor_key = visitor_key.strip()
             if payload.query_vector is not None:
                 runtime.validate_query_vector(path, payload.query_vector)
+            from .data import version_sort_key
             from .search import lexical_search
             lexical = lexical_search(path, query, payload.filters, limit=500, allow_fuzzy=payload.mode == "fuzzy")
             semantic = []
@@ -340,17 +341,55 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                         notice = "语义搜索暂不可用，已显示文字搜索结果。请检查语义搜索密钥与模型配置。"
                 else:
                     notice = "语义索引尚未就绪或模型配置不匹配，当前使用文字搜索。"
-            scores = defaultdict(float)
-            candidates = {}
-            for collection in (lexical, semantic):
-                for rank, item in enumerate(collection, 1):
+            if not semantic:
+                raw_ordered = []
+                for rank, item in enumerate(lexical, 1):
+                    copy_item = dict(item)
+                    copy_item["score"] = round(1 / (60 + rank), 6)
+                    raw_ordered.append(copy_item)
+            else:
+                scores = defaultdict(float)
+                candidates = {}
+                lex_ids = set()
+                sem_ids = set()
+                for rank, item in enumerate(lexical, 1):
                     identifier = item["chunk_id"]
-                    scores[identifier] += 1 / (60 + rank)
-                    if identifier not in candidates or item.get("match_type") == "exact":
+                    lex_ids.add(identifier)
+                    scores[identifier] += 1.2 / (50 + rank)
+                    candidates[identifier] = dict(item)
+                for rank, item in enumerate(semantic, 1):
+                    identifier = item["chunk_id"]
+                    sem_ids.add(identifier)
+                    scores[identifier] += 1.3 / (50 + rank)
+                    if identifier not in candidates:
                         candidates[identifier] = dict(item)
-            ordered = sorted(candidates.values(), key=lambda item: (item.get("match_type") == "exact", scores[item["chunk_id"]]), reverse=True)
-            for item in ordered:
-                item["score"] = round(scores[item["chunk_id"]], 6)
+                def _hybrid_key(item: dict) -> tuple:
+                    cid = item["chunk_id"]
+                    mtype = item.get("match_type", "")
+                    mfield = item.get("matched_field", "")
+                    ver_maj, ver_min = version_sort_key(item.get("version", ""))
+                    sc = scores[cid]
+                    in_both = 1 if (cid in lex_ids and cid in sem_ids) else 0
+                    if mtype == "exact" and mfield in {"text", "speaker", "mission"}:
+                        field_rank = 2 if mfield == "text" else (1 if mfield == "speaker" else 0)
+                        return (3, ver_maj, ver_min, field_rank, in_both, sc)
+                    if mtype == "exact":
+                        return (2, ver_maj, ver_min, 0, in_both, sc)
+                    return (1, in_both, sc, ver_maj, ver_min, 0)
+                raw_ordered = sorted(candidates.values(), key=_hybrid_key, reverse=True)
+                for item in raw_ordered:
+                    item["score"] = round(scores[item["chunk_id"]], 6)
+            if len(raw_ordered) > 5:
+                ordered = []
+                seen_dedup = set()
+                for item in raw_ordered:
+                    dedup_key = (item.get("mission_id"), item.get("speaker"), item.get("text"))
+                    if dedup_key in seen_dedup:
+                        continue
+                    seen_dedup.add(dedup_key)
+                    ordered.append(item)
+            else:
+                ordered = raw_ordered
             return {"results": ordered[payload.offset:payload.offset + payload.limit], "total": len(ordered), "truncated": len(lexical) >= 500 or len(semantic) >= 500, "search_mode": search_mode, "notice": notice, "elapsed_ms": round((time.monotonic() - start) * 1000), "snapshot": snapshot}
         finally:
             search_slots.release()

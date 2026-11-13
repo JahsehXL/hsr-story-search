@@ -165,6 +165,49 @@ class DataTests(unittest.TestCase):
             self.assertEqual(first.execute(sql).fetchone()[0], second.execute(sql).fetchone()[0])
             self.assertTrue(second.execute("SELECT 1 FROM lines WHERE sentence_id='14' AND kind='reference'").fetchone())
 
+    def test_timeline_fallback_version_descending_and_unspaced_natural_query(self):
+        # Add 1054701 (4.7) timeline sentences with no Act/DS file on disk, plus 1.0 dialogue for sorting checks.
+        main_missions = json.loads((self.root / "ExcelOutput/MainMission.json").read_text(encoding="utf-8"))
+        main_missions.append({"MainMissionID": 1054701, "Name": {"Hash": 200}, "WorldID": 3, "ChapterID": 2, "Type": "Main"})
+        self.write("ExcelOutput/MainMission.json", main_missions)
+
+        texts = json.loads((self.root / "TextMap/TextMapCHS.json").read_text(encoding="utf-8"))
+        texts.update({
+            "200": "世界图像的时代",
+            "201": "星期日",
+            "202": "知更鸟",
+            "203": "我们关于笼中鸟的争论该结束了。",
+            "204": "这只星穹列车上的小鸟终于飞起来了。",
+        })
+        self.write("TextMap/TextMapCHS.json", texts)
+
+        sentences = json.loads((self.root / "ExcelOutput/TalkSentenceConfig.json").read_text(encoding="utf-8"))
+        sentences.extend([
+            {"TalkSentenceID": 157010101, "TalkSentenceText": {"Hash": 203}, "TextmapTalkSentenceName": {"Hash": 201}},
+            {"TalkSentenceID": 157010102, "TalkSentenceText": {"Hash": 204}, "TextmapTalkSentenceName": {"Hash": 202}},
+        ])
+        self.write("ExcelOutput/TalkSentenceConfig.json", sentences)
+
+        db2 = Path(self.temp.name) / "timeline.db"
+        import_data(self.root, db2)
+        with open_db(db2, readonly=False) as conn:
+            conn.execute("UPDATE missions SET version='1.0' WHERE id='1'")
+            conn.execute("UPDATE missions SET version='4.7' WHERE id='1054701'")
+
+        catalog = get_catalog(db2)
+        self.assertEqual(catalog["versions"], ["4.7", "1.0"])
+
+        ordered = lexical_search(db2, "星穹列车")
+        self.assertEqual([item["version"] for item in ordered], ["4.7", "1.0"])
+
+        by_version = lexical_search(db2, "", {"version": "4.7"})
+        self.assertTrue(by_version)
+        self.assertEqual(by_version[0]["mission_id"], "1054701")
+
+        natural = lexical_search(db2, "星期日和知更鸟关于笼中鸟的争论")
+        self.assertTrue(natural)
+        self.assertEqual(natural[0]["mission_id"], "1054701")
+
 
 if __name__ == "__main__":
     unittest.main()
