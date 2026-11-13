@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.tsbuildinfo
+data/
+dist/
+build/
+releases/
+frontend/node_modules/
+frontend/dist/
+.env
+.env.*
+!.env.example
+api-key.bin
+settings.json
+server-access.json
+*.key
+*.pem
+*.log
+
+# Local administration helpers for the original deployment.
+scripts/deploy.py
+scripts/expose_service.py

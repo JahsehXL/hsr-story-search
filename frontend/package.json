@@ -1,0 +1,23 @@
+{
+  "name": "hsr-story-search-web",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "test": "node --experimental-strip-types --test tests/story.test.ts"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.0"
+  }
+}
