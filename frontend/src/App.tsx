@@ -442,15 +442,15 @@ export default function App() {
         <div className="search-methods">
           <span className="mode-label" id="search-mode-label">搜索模式</span>
           <div className="mode-tabs" role="group" aria-labelledby="search-mode-label">
-            <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={!indexReady(status.embedding) ? '管理员建立完整语义索引后可用' : undefined} onClick={() => chooseMode('hybrid')}>描述找剧情</button>
+            <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={!indexReady(status.embedding) ? '管理员建立完整语义索引后可用' : undefined} onClick={() => chooseMode('hybrid')}>描述找剧情<span className="mode-rec-badge">推荐</span></button>
             <button type="button" aria-pressed={mode === 'text'} onClick={() => chooseMode('text')}>精准关键词</button>
             <button type="button" aria-pressed={mode === 'fuzzy'} onClick={() => chooseMode('fuzzy')}>错字容错</button>
           </div>
           <div className="mode-help-wrap">
             <button type="button" className="mode-help-button" aria-label="查看搜索模式说明" aria-haspopup="dialog" aria-describedby="mode-help-tip" onClick={() => setShowModeHelp(true)}>!</button>
             <div id="mode-help-tip" className="mode-help-tooltip" role="tooltip">
-              <p><strong>描述找剧情：</strong>忘了台词，只记得大概情节</p>
-              <p><strong>精准关键词：</strong>记得原话、角色名、外号或任务名</p>
+              <p><strong>描述找剧情（推荐）：</strong>忘了台词，只记得大概情节</p>
+              <p><strong>精准关键词（默认）：</strong>记得原话、角色名、外号或任务名</p>
               <p><strong>错字容错：</strong>记得大致台词，但怕记错或漏字</p>
               <span>点击查看详细用法与举例</span>
             </div>
@@ -496,7 +496,7 @@ export default function App() {
         <section className="mode-help-card">
           <div className="mode-help-card-head">
             <h4>描述找剧情</h4>
-            <span className="mode-help-tag">需先配置密钥</span>
+            <span className="mode-help-tag recommended">推荐 · 需先配置密钥</span>
           </div>
           <p><strong>适用场景：</strong>完全想不起原台词，只记得人物、地点或大概发生过什么事。</p>
           <p><strong>怎么输入：</strong>像平时说话一样把画面或情节写出来，例如 <code>流萤带开拓者逛游乐园</code>、<code>星期日和知更鸟在剧场争论</code>。</p>
@@ -505,7 +505,7 @@ export default function App() {
         <section className="mode-help-card">
           <div className="mode-help-card-head">
             <h4>精准关键词</h4>
-            <span className="mode-help-tag default">默认 · 无需密钥</span>
+            <span className="mode-help-tag">默认 · 无需密钥</span>
           </div>
           <p><strong>适用场景：</strong>记得一两句原台词、任务名字、版本号、角色名或玩家常用外号。</p>
           <p><strong>怎么输入：</strong>直接输入台词或词组，多个词可用<strong>空格隔开</strong>一起搜，例如 <code>生命因何而沉睡</code>、<code>三月七 星穹列车</code>；也支持常见外号（如搜 <code>老杨</code> 会同时搜 <code>瓦尔特</code>、搜 <code>萨姆</code> 会同时搜 <code>流萤</code>）。</p>
@@ -518,7 +518,7 @@ export default function App() {
           <p><strong>适用场景：</strong>大致记得某句台词怎么说，但记混了个别字、中间漏了字或有错别字，用「精准关键词」搜不到时。</p>
           <p><strong>怎么输入：</strong>至少输入 3 个字，例如把“生命因何而沉睡”记成 <code>生命因啥而沉睡</code> 也能找回原剧情。</p>
         </section>
-        <p className="mode-help-summary">日常使用建议：知道原话或人名优先用「精准关键词」，搭配右侧四个筛选框缩小范围；记错字切「错字容错」；只记得大致故事经过选「描述找剧情」。</p>
+        <p className="mode-help-summary">日常使用建议：配置好「🔑 语义密钥」后推荐用「描述找剧情」，怎么想就怎么搜；免配置默认是「精准关键词」，适合搜原话或人名；记错字切「错字容错」。</p>
       </div>
     </Modal>}
     {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} initialEndpoint={visitorEndpoint} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('', '')} /></Modal>}
