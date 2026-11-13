@@ -442,15 +442,15 @@ export default function App() {
         <div className="search-methods">
           <span className="mode-label" id="search-mode-label">搜索模式</span>
           <div className="mode-tabs" role="group" aria-labelledby="search-mode-label">
-            <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={!indexReady(status.embedding) ? '管理员建立完整语义索引后可用' : undefined} onClick={() => chooseMode('hybrid')}>描述找剧情<span className="mode-rec-badge">推荐</span></button>
+            <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={!indexReady(status.embedding) ? '管理员建立完整语义索引后可用' : undefined} onClick={() => chooseMode('hybrid')}>描述找剧情</button>
             <button type="button" aria-pressed={mode === 'text'} onClick={() => chooseMode('text')}>精准关键词</button>
             <button type="button" aria-pressed={mode === 'fuzzy'} onClick={() => chooseMode('fuzzy')}>错字容错</button>
           </div>
           <div className="mode-help-wrap">
             <button type="button" className="mode-help-button" aria-label="查看搜索模式说明" aria-haspopup="dialog" aria-describedby="mode-help-tip" onClick={() => setShowModeHelp(true)}>!</button>
             <div id="mode-help-tip" className="mode-help-tooltip" role="tooltip">
-              <p><strong>描述找剧情（推荐）：</strong>忘了台词，只记得大概情节</p>
-              <p><strong>精准关键词（默认）：</strong>记得原话、角色名、外号或任务名</p>
+              <p><strong>描述找剧情：</strong>忘了台词，只记得大概情节</p>
+              <p><strong>精准关键词：</strong>记得原话、角色名、外号或任务名</p>
               <p><strong>错字容错：</strong>记得大致台词，但怕记错或漏字</p>
               <span>点击查看详细用法与举例</span>
             </div>
