@@ -190,3 +190,25 @@ test('proxy fallback sends the visitor key only as a header and redacts server e
     else Reflect.deleteProperty(globalThis, 'document');
   }
 });
+
+test('aborting a superseded search cancels the API fetch and preserves cancellation', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { baseURI: 'https://story.example/' } });
+  const controller = new AbortController();
+  globalThis.fetch = async (_url, options) => {
+    assert.equal(options?.signal, controller.signal);
+    return new Promise<Response>((_resolve, reject) => {
+      options!.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    });
+  };
+  try {
+    const pending = searchRequest({ query: '旅途', mode: 'text' }, {}, controller.signal);
+    controller.abort();
+    await assert.rejects(pending, { name: 'AbortError' });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
+    else Reflect.deleteProperty(globalThis, 'document');
+  }
+});

@@ -7,6 +7,21 @@ export interface ChoiceSet {
 
 export type StorySegment = { kind: 'dialogue'; lines: DialogueLine[] } | { kind: 'choice'; choice: ChoiceSet };
 
+/** Bound each mounted dialogue block without splitting a set of player answers. */
+export function storyBlocks(segments: StorySegment[]): StorySegment[] {
+  const blocks: StorySegment[] = [];
+  for (const segment of segments) {
+    if (segment.kind === 'choice') {
+      blocks.push(segment);
+      continue;
+    }
+    for (let start = 0; start < segment.lines.length; start += 16) {
+      blocks.push({ kind: 'dialogue', lines: segment.lines.slice(start, start + 16) });
+    }
+  }
+  return blocks;
+}
+
 export interface StoryGroup {
   key: string;
   script: string;

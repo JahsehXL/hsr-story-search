@@ -375,7 +375,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                         return (3, ver_maj, ver_min, field_rank, in_both, sc)
                     if mtype == "exact":
                         return (2, ver_maj, ver_min, 0, in_both, sc)
-                    return (1, in_both, sc, ver_maj, ver_min, 0)
+                    return (1, sc, ver_maj, ver_min, in_both, 0)
                 raw_ordered = sorted(candidates.values(), key=_hybrid_key, reverse=True)
                 for item in raw_ordered:
                     item["score"] = round(scores[item["chunk_id"]], 6)

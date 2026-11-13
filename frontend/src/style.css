@@ -242,6 +242,7 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
 
 /* Script-Book Dialogue Lines */
 .story-segment { padding: 4px 0; }
+.story-block { display: flow-root; }
 .dialogue-group { display: flex; flex-direction: column; }
 .dialogue-line {
   display: grid;

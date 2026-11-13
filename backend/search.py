@@ -39,6 +39,9 @@ KNOWN_ENTITIES = (
     "青雀", "雪衣", "寒鸦", "阿哈", "欢愉", "仙舟", "罗浮",
 )
 
+SCENE_LOCATIONS = ("匹诺康尼", "翁法罗斯", "二相乐园", "贝洛伯格", "空间站", "仙舟", "罗浮")
+NON_SPEAKER_ENTITIES = {*SCENE_LOCATIONS, "开拓者", "星际和平公司", "星核猎手", "星穹列车", "欢愉"}
+
 STOPWORD_PATTERN = re.compile(
     r"关于|为什么|怎么|什么|如何|哪里|哪个|时候|地方|告诉|讨论|争论|对话|剧情|故事|台词|"
     r"她的|他的|我的|你的|他们|她们|我们|你们|自己|可以|因为|所以|但是|然后|如果|或者|以及|还有|"
@@ -52,28 +55,37 @@ def _extract_content_terms(query: str) -> list[str]:
     for ent in KNOWN_ENTITIES:
         if ent in text:
             terms.append(ent)
+            text = text.replace(ent, " ")
     cleaned = STOPWORD_PATTERN.sub(" ", text)
     for part in re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", cleaned):
-        for ent in KNOWN_ENTITIES:
-            if ent in part and part != ent:
-                for sub in part.split(ent):
-                    if len(sub) >= 2:
-                        terms.append(sub)
-                break
-        else:
-            if len(part) >= 2:
-                if len(part) > 4 and re.fullmatch(r"[\u3400-\u9fff]+", part):
-                    for idx in range(0, len(part) - 1, 2):
-                        terms.append(part[idx:idx + 2])
-                    if len(part) % 2 == 1:
-                        terms.append(part[-2:])
-                else:
-                    terms.append(part)
+        if len(part) >= 2:
+            if len(part) > 4 and re.fullmatch(r"[\u3400-\u9fff]+", part):
+                for idx in range(0, len(part) - 1, 2):
+                    terms.append(part[idx:idx + 2])
+                if len(part) % 2 == 1:
+                    terms.append(part[-2:])
+            else:
+                terms.append(part)
     return list(dict.fromkeys(t for t in terms if len(t) >= 2))
 
 
 def _compact(text: str) -> str:
     return "".join(re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", text.lower()))
+
+
+def semantic_context_bonus(content_terms: list[str], text: str, mission: dict, speakers: set[str]) -> float:
+    """Use balanced phrase coverage and explicit scene evidence when ranking descriptions."""
+    if not content_terms:
+        return 0.0
+    haystack = _compact(" ".join((text, mission.get("mission_name", ""), mission.get("chapter", ""), mission.get("world", ""))))
+    coverage = sum(term in haystack for term in content_terms) / len(content_terms)
+    actors = [term for term in content_terms if term in KNOWN_ENTITIES and term not in NON_SPEAKER_ENTITIES]
+    actor_coverage = sum(any(speaker.startswith(actor) for speaker in speakers) for actor in actors) / len(actors) if actors else 0.0
+    locations = [term for term in content_terms if term in SCENE_LOCATIONS]
+    world = _compact(mission.get("world", ""))
+    location_coverage = sum(location in world for location in locations) / len(locations) if locations else 0.0
+    # A single action word cannot outweigh all actors and the scene location.
+    return 0.10 * coverage + 0.06 * actor_coverage + 0.05 * location_coverage
 
 
 def _subterms(text: str) -> list[str]:
@@ -290,10 +302,12 @@ def _score_fields(query: str, fields: dict[str, str], allow_fuzzy: bool = False)
             text_and_mission = compact_fields.get("text", "") + " " + compact_fields.get("mission", "")
             matched_terms = [t for t in content_terms if t in combined_compact]
             topic_terms = [t for t in content_terms if t not in KNOWN_ENTITIES]
+            actor_terms = [t for t in content_terms if t in KNOWN_ENTITIES and t not in NON_SPEAKER_ENTITIES]
             topic_hits = [t for t in topic_terms if t in text_and_mission]
             ratio = len(matched_terms) / len(content_terms)
             topic_ok = (not topic_terms) or len(topic_hits) > 0
-            if topic_ok and (len(matched_terms) == len(content_terms) or (len(content_terms) >= 3 and len(matched_terms) >= 2 and ratio >= 0.65)):
+            actor_ok = not actor_terms or any(t in combined_compact for t in actor_terms)
+            if topic_ok and actor_ok and (len(matched_terms) == len(content_terms) or (len(content_terms) >= 3 and len(matched_terms) >= 2 and ratio >= 0.65)):
                 text_hits = sum(1 for t in matched_terms if t in compact_fields.get("text", ""))
                 topic_ratio = (len(topic_hits) / len(topic_terms)) if topic_terms else 1.0
                 base = 235.0 + ratio * 15.0 + topic_ratio * 20.0 if text_hits > 0 else 190.0 + ratio * 15.0

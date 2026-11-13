@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from backend.data import get_catalog, get_mission, import_data, open_db
-from backend.search import get_chunks, lexical_search
+from backend.search import _extract_content_terms, _score_fields, get_chunks, lexical_search, semantic_context_bonus
 
 
 class DataTests(unittest.TestCase):
@@ -207,6 +207,75 @@ class DataTests(unittest.TestCase):
         natural = lexical_search(db2, "星期日和知更鸟关于笼中鸟的争论")
         self.assertTrue(natural)
         self.assertEqual(natural[0]["mission_id"], "1054701")
+
+    def test_early_timeline_recovers_only_bounded_unique_mission_gaps(self):
+        missions = json.loads((self.root / "ExcelOutput/MainMission.json").read_text(encoding="utf-8"))
+        missions.extend({"MainMissionID": mid, "Name": {"Hash": 1}, "Type": "Main"}
+                        for mid in (1000101, 1000201))
+        self.write("ExcelOutput/MainMission.json", missions)
+        texts = json.loads((self.root / "TextMap/TextMapCHS.json").read_text(encoding="utf-8"))
+        sentences = json.loads((self.root / "ExcelOutput/TalkSentenceConfig.json").read_text(encoding="utf-8"))
+        for prefix in (1000201, 1000301, 1000401, 1000501):
+            for suffix in range(12, 41):
+                sid = prefix * 100 + suffix
+                texts[str(sid)] = "这里是一个空间站。" if sid == 100020114 else f"对白{sid}"
+                sentences.append({"TalkSentenceID": sid, "TalkSentenceText": {"Hash": sid},
+                                  "TextmapTalkSentenceName": {"Hash": 4}})
+        self.write("TextMap/TextMapCHS.json", texts)
+        self.write("ExcelOutput/TalkSentenceConfig.json", sentences)
+
+        def anchored_script(prefix, timeline=True):
+            tasks = [{"$type": "RPG.GameCore.PlayTimeline"}] if timeline else []
+            tasks.append({"$type": "RPG.GameCore.PlayOptionTalk", "OptionList": [
+                {"TalkSentenceID": prefix * 100 + suffix, "TriggerCustomString": f"TalkSentence_{prefix}{suffix}"}
+                for suffix in (13, 15, 18, 26, 30, 33, 39)
+            ]})
+            branches = [{"TaskList": [
+                {"$type": "RPG.GameCore.WaitCustomString", "CustomString": {"Value": f"TalkSentence_{prefix}{suffix}"}}
+            ]} for suffix in (13, 15, 18, 21, 26, 30, 33, 36, 39)]
+            return {"OnStartSequece": [{"TaskList": tasks}, *branches]}
+
+        self.write("Story/Mission/1000101/intro.json", anchored_script(1000201))
+        self.write("Config/Level/Mission/1000101/Act/shadow.json", anchored_script(1000201, timeline=False))
+        self.write("Story/Mission/1000101/plain.json", anchored_script(1000301, timeline=False))
+        self.write("Story/Mission/1000101/shared.json", anchored_script(1000401))
+        self.write("Story/Mission/1000201/shared.json", anchored_script(1000401))
+        self.write("Story/Mission/1000101/ambiguous-a.json", anchored_script(1000501))
+        self.write("Story/Mission/1000101/ambiguous-b.json", anchored_script(1000501))
+        output = Path(self.temp.name) / "early-timeline.db"
+        import_data(self.root, output)
+        with open_db(output) as conn:
+            recovered = conn.execute("SELECT mission_id,script,sequence,branch,kind FROM lines WHERE sentence_id='100020114'").fetchone()
+            self.assertEqual(tuple(recovered), ("1000101", "Story/Mission/1000101/intro.json", 1, "TalkSentence_100020113", "dialogue"))
+            for sid, sequence, branch in ((100020116, 2, "TalkSentence_100020115"),
+                                         (100020127, 5, "TalkSentence_100020126"),
+                                         (100020131, 6, "TalkSentence_100020130"),
+                                         (100020134, 7, "TalkSentence_100020133")):
+                recovered = conn.execute("SELECT sequence,branch FROM lines WHERE sentence_id=?", (str(sid),)).fetchone()
+                self.assertEqual(tuple(recovered), (sequence, branch))
+            for excluded in (100020112, 100020140, 100030114, 100040114, 100050114):
+                self.assertIsNone(conn.execute("SELECT 1 FROM lines WHERE sentence_id=?", (str(excluded),)).fetchone())
+        self.assertEqual(lexical_search(output, "这里是一个空间站")[0]["mission_id"], "1000101")
+
+    def test_description_terms_separate_adjacent_entities_and_actions(self):
+        terms = _extract_content_terms("卡芙卡在空间站唤醒开拓者")
+        self.assertEqual(set(terms), {"卡芙卡", "空间站", "开拓者", "唤醒"})
+        self.assertEqual(set(_extract_content_terms("大黑塔与黑塔讨论空间站")), {"大黑塔", "黑塔", "空间站"})
+        self.assertEqual(set(_extract_content_terms("星期日和知更鸟关于谐乐鸽笼子的对话")),
+                         {"星期日", "知更鸟", "谐乐", "鸽笼", "笼子"})
+
+    def test_description_bonus_balances_terms_and_actual_scene_evidence(self):
+        terms = _extract_content_terms("卡芙卡在空间站唤醒开拓者")
+        scene = {"world": "空间站「黑塔」"}
+        direct = semantic_context_bonus(terms, "卡芙卡：这儿？一个空间站，不重要。", scene, {"卡芙卡"})
+        mention = semantic_context_bonus(terms, "开拓者：我记得卡芙卡在空间站唤醒我。", {"world": "翁法罗斯"}, {"开拓者"})
+        self.assertGreater(direct, mention)
+        action_only = semantic_context_bonus(terms, "唤醒", {}, set())
+        self.assertAlmostEqual(action_only, 0.025)
+        self.assertEqual(semantic_context_bonus([], "", {}, set()), 0.0)
+        unrelated = {"text": "我记得自己在空间站被唤醒。", "speaker": "开拓者"}
+        self.assertEqual(_score_fields("卡芙卡在空间站唤醒开拓者", unrelated)[0], 0.0)
+        self.assertGreater(_score_fields("卡芙卡在空间站唤醒开拓者", {**unrelated, "speaker": "卡芙卡"})[0], 0.0)
 
 
 if __name__ == "__main__":

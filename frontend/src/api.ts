@@ -10,7 +10,10 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   if (typeof options.body === 'string' && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   let response: Response;
   try { response = await fetch(apiUrl(path), { ...options, headers, credentials: 'same-origin' }); }
-  catch { throw new Error('无法连接检索服务，请检查网络后重试'); }
+  catch (failure) {
+    if (options.signal?.aborted) throw failure;
+    throw new Error('无法连接检索服务，请检查网络后重试');
+  }
   if (!response.ok) {
     let message = `请求失败（${response.status}）`;
     try {
@@ -27,8 +30,11 @@ export function post<T>(path: string, body: unknown = {}, options: RequestInit =
   return request<T>(path, { ...options, method: 'POST', body: JSON.stringify(body) });
 }
 
-export function searchRequest<T>(body: Record<string, unknown>, prepared: PreparedSemanticQuery = {}): Promise<T> {
-  return post<T>('search', { ...body, query_vector: prepared.queryVector }, prepared.fallbackKey ? { headers: { 'X-Embedding-Key': prepared.fallbackKey } } : {});
+export function searchRequest<T>(body: Record<string, unknown>, prepared: PreparedSemanticQuery = {}, signal?: AbortSignal): Promise<T> {
+  return post<T>('search', { ...body, query_vector: prepared.queryVector }, {
+    signal,
+    ...(prepared.fallbackKey ? { headers: { 'X-Embedding-Key': prepared.fallbackKey } } : {}),
+  });
 }
 
 export function downloadJson(name: string, content: unknown): void {

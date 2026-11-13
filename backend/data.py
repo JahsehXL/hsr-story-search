@@ -317,13 +317,63 @@ class DatasetBuilder:
             if mid.startswith("103"):
                 p5_to_mid.setdefault(mid[:5], mid)
         existing_p7: dict[str, str] = {}
+        prefix_missions: dict[str, set[str]] = defaultdict(set)
         for p7, mid in self.conn.execute("SELECT DISTINCT substr(sentence_id,1,7), mission_id FROM lines WHERE length(sentence_id)=9"):
+            prefix_missions[p7].add(mid)
             if p7 and p7.isdigit() and _eligible(mid) and p7[:5] in p5_to_mid:
                 existing_p7.setdefault(p7, mid)
+        # Older chapters use a different numbering scheme. Recover only gaps
+        # bounded by multiple explicit sentence references in a timeline script.
+        # A reused prefix cannot establish which mission owns the missing text.
+        anchored_ranges: dict[str, tuple[str, str, int, int]] = {}
+        timeline_anchors: dict[str, list[dict]] = {}
+        ambiguous_prefixes: set[str] = set()
+        for row in self.conn.execute("""SELECT substr(sentence_id,1,7) prefix,mission_id,script
+                FROM lines WHERE length(sentence_id)=9
+                GROUP BY prefix,mission_id,script HAVING count(DISTINCT sentence_id)>=2"""):
+            p7, mid, script = row
+            mission = self.missions.get(mid, {})
+            if _eligible(mid) or mission.get("type") not in {"开拓任务", "Gap", "同行任务"}:
+                continue
+            if not p7.isdigit() or prefix_missions[p7] != {mid} or p7 in ambiguous_prefixes:
+                continue
+            path = (self.root / script).resolve()
+            if not path.is_relative_to(self.root.resolve()) or not path.is_file():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            has_timeline = any(
+                str(task.get("$type", "")).endswith("PlayTimeline")
+                for sequence in data.get("OnStartSequece", []) for task in sequence.get("TaskList", [])
+            )
+            if has_timeline:
+                if p7 in anchored_ranges:
+                    del anchored_ranges[p7]
+                    ambiguous_prefixes.add(p7)
+                    continue
+                anchors = []
+                for sequence_index, sequence in enumerate(data.get("OnStartSequece", [])):
+                    for task_index, task in enumerate(sequence.get("TaskList", [])):
+                        branch = str(task.get("CustomString", {}).get("Value", ""))
+                        match = re.fullmatch(r"TalkSentence_(\d{9})", branch)
+                        if (str(task.get("$type", "")).endswith("WaitCustomString")
+                                and match and match[1].startswith(p7) and match[1] in self.sentences):
+                            anchors.append({"sentence_id": int(match[1]), "sequence": sequence_index,
+                                            "position": task_index * 10000, "branch": branch})
+                anchor_ids = [anchor["sentence_id"] for anchor in anchors]
+                if len(anchor_ids) < 2 or len(set(anchor_ids)) != len(anchor_ids):
+                    continue
+                anchors.sort(key=lambda anchor: anchor["sentence_id"])
+                timeline_anchors[p7] = anchors
+                anchored_ranges[p7] = (mid, script, anchors[0]["sentence_id"], anchors[-1]["sentence_id"])
+                existing_p7[p7] = mid
         unused_by_p7: dict[str, list[str]] = defaultdict(list)
         for sid in sorted(self.sentences, key=lambda s: int(s) if s.isdigit() else 0):
             if sid not in self.used_sentences and len(sid) == 9 and sid.isdigit():
                 p7 = sid[:7]
+                if p7 in ambiguous_prefixes:
+                    continue
+                if p7 in anchored_ranges and not anchored_ranges[p7][2] < int(sid) < anchored_ranges[p7][3]:
+                    continue
                 if p7 in existing_p7 or p7[:5] in p5_to_mid or (p7 in self.perf_paths and _eligible(self.perf_paths[p7][0])):
                     unused_by_p7[p7].append(sid)
         for p7 in sorted(unused_by_p7):
@@ -337,7 +387,20 @@ class DatasetBuilder:
                     perf_script = self.perf_paths[p7][1]
             if not mid:
                 mid = p5_to_mid.get(p7[:5], "")
-            if not mid or not _eligible(mid):
+            if not mid or not (_eligible(mid) or (p7 in anchored_ranges and anchored_ranges[p7][0] == mid)):
+                continue
+            if p7 in anchored_ranges:
+                script = anchored_ranges[p7][1]
+                grouped_lines: dict[tuple[int, str], list[dict]] = defaultdict(list)
+                for sid in sids:
+                    preceding = [anchor for anchor in timeline_anchors[p7] if anchor["sentence_id"] < int(sid)]
+                    anchor = preceding[-1]
+                    position = anchor["position"] + int(sid) - anchor["sentence_id"]
+                    line = self.make_line(sid, mid, script, anchor["sequence"], position, anchor["branch"], "dialogue")
+                    if line:
+                        grouped_lines[(anchor["sequence"], anchor["branch"])].append(line)
+                for lines in grouped_lines.values():
+                    self.save_lines(lines)
                 continue
             existing = self.conn.execute(
                 "SELECT sentence_id, script, sequence, position, branch, kind FROM lines WHERE mission_id=? AND sentence_id LIKE ? ORDER BY CAST(sentence_id AS INTEGER)",

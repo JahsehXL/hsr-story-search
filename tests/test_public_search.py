@@ -226,3 +226,19 @@ def test_embedding_retry_limit_is_bounded_without_changing_default_build_retries
         with pytest.raises(EmbeddingError):
             embed(["test"], config, "build-test-key")
         assert len(requests) == 5
+
+
+def test_weak_overlap_does_not_override_high_ranked_semantic_result(public_app):
+    def result(identifier):
+        return {"chunk_id": identifier, "mission_id": "1", "speaker": "角色", "text": f"片段{identifier}",
+                "match_type": "keyword", "matched_field": "text", "version": "1.0", "score": 1.0}
+    lexical = [result(i) for i in range(1000, 1499)] + [result(2)]
+    semantic = [result(1)] + [result(i) for i in range(2000, 2498)] + [result(2)]
+    runtime = public_app.state.runtime
+    with TestClient(public_app, base_url="https://story.example") as client, \
+            patch("backend.search.lexical_search", return_value=lexical), \
+            patch.object(runtime, "semantic_search", return_value=semantic):
+        response = client.post("/api/v1/search", json={"query": "一段剧情描述", "mode": "hybrid", "query_vector": [1., 0., 0.]})
+        assert response.status_code == 200
+        assert response.json()["search_mode"] == "hybrid"
+        assert response.json()["results"][0]["chunk_id"] == 1

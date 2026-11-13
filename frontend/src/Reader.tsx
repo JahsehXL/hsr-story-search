@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cleanMissionName, displayText, Empty, errorText, Highlight, speakerName, versionText } from './presentation';
-import { buildStoryModel, resolveFullMissionStory, shareStoryAnchor } from './story';
+import { buildStoryModel, resolveFullMissionStory, shareStoryAnchor, storyBlocks } from './story';
+import StoryBlock from './StoryBlock';
 import type { ChoiceSet } from './story';
 import type { DialogueLine, MissionResponse, Result } from './types';
 
@@ -22,6 +23,7 @@ interface ReaderProps {
 }
 
 const missionTypes: Record<string, string> = { Main: '开拓任务', Branch: '冒险任务', Companion: '同行任务', Daily: '日常任务', Interlude: '开拓续闻', Gap: '开拓续闻' };
+const emptySelections: Record<string, string> = {};
 
 function Dialogue({ line, query, hit, onShare }: { line: DialogueLine; query: string; hit: boolean; onShare: (line: DialogueLine) => void }) {
   const name = speakerName(line.speaker);
@@ -86,14 +88,21 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [choiceOverrides, setChoiceOverrides] = useState<{ identity: string; selections: Record<string, string> }>({ identity: '', selections: {} });
+  const [fullTextMode, setFullTextMode] = useState({ missionId: '', enabled: false });
   const scrollRef = useRef<HTMLDivElement>(null);
+  const positionedIdentity = useRef('');
   const mission = detail?.mission;
   const identity = JSON.stringify([selected?.mission_id, selected?.line_id]);
+  const showFullText = fullTextMode.missionId === selected?.mission_id && fullTextMode.enabled;
   const model = useMemo(() => buildStoryModel(detail?.lines || [], detail?.edges || []), [detail?.lines, detail?.edges]);
-  const customSelections = choiceOverrides.identity === identity ? choiceOverrides.selections : {};
+  const customSelections = choiceOverrides.identity === identity ? choiceOverrides.selections : emptySelections;
   const resolved = useMemo(() => resolveFullMissionStory(model, selected?.line_id || '', customSelections), [model, selected?.line_id, customSelections]);
+  const groups = useMemo(() => resolved.groups.map(group => ({ ...group, blocks: storyBlocks(group.segments) })), [resolved.groups]);
   const visibleLines = useMemo(
-    () => resolved.groups.flatMap(group => group.lines.filter(line => !line.kind.includes('option') || Object.values(resolved.selections).includes(line.id))),
+    () => {
+      const selectedAnswers = new Set(Object.values(resolved.selections));
+      return resolved.groups.flatMap(group => group.lines.filter(line => !line.kind.includes('option') || selectedAnswers.has(line.id)));
+    },
     [resolved.groups, resolved.selections],
   );
   const shareAnchor = shareStoryAnchor(visibleLines, resolved.selections, selected?.line_id || '');
@@ -114,9 +123,15 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
     if (!selected?.line_id || !scrollRef.current) return;
     const target = scrollRef.current.querySelector<HTMLElement>(`#line-${CSS.escape(selected.line_id)}`);
     if (target) {
-      target.scrollIntoView({ block: 'center', behavior });
+      const scroller = scrollRef.current;
+      const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      scroller.scrollTo({ top: Math.max(0, top - (scroller.clientHeight - target.offsetHeight) / 2), behavior });
     }
   }, [selected?.line_id]);
+
+  useEffect(() => {
+    setFullTextMode({ missionId: selected?.mission_id || '', enabled: false });
+  }, [selected?.mission_id]);
 
   useEffect(() => {
     setVersion(mission?.version || '');
@@ -127,10 +142,32 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
   }, [mission?.id, mission?.version, mission?.version_source, mission?.version_status]);
 
   useEffect(() => {
-    if (!detail || !selected?.line_id) return;
-    const timer = setTimeout(() => scrollToHit('smooth'), 40);
-    return () => clearTimeout(timer);
-  }, [detail, selected?.line_id, scrollToHit]);
+    if (!detail) {
+      positionedIdentity.current = '';
+      return;
+    }
+    const scroller = scrollRef.current;
+    const flow = scroller?.querySelector<HTMLElement>('.story-flow');
+    if (!selected?.line_id || !scroller || !flow || positionedIdentity.current === identity) return;
+    positionedIdentity.current = identity;
+    // Nearby blocks replace estimates with their measured heights after the first jump.
+    // Correct that initial layout only, and yield immediately when the reader interacts.
+    let stopped = false;
+    const align = () => { if (!stopped) scrollToHit('auto'); };
+    const observer = 'ResizeObserver' in window ? new ResizeObserver(align) : null;
+    observer?.observe(flow);
+    const frame = requestAnimationFrame(align);
+    const stop = () => { stopped = true; observer?.disconnect(); };
+    const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+    for (const event of events) scroller.addEventListener(event, stop, { passive: true });
+    const timer = setTimeout(stop, 1000);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      stop();
+      for (const event of events) scroller.removeEventListener(event, stop);
+    };
+  }, [detail, identity, selected?.line_id, scrollToHit]);
 
   function choose(choice: ChoiceSet, line: DialogueLine) {
     setChoiceOverrides({
@@ -146,7 +183,7 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
   const typeKey = mission?.type || selected.type || '';
   const verText = versionText(mission?.version || selected.version, mission?.version_status || selected.version_status);
   const copySource = [name, chapter && chapter !== name ? chapter : '', world, verText].filter(Boolean).join(' · ');
-  const copyText = visibleLines.length ? visibleLines.map(line => `${speakerName(line.speaker)}：${displayText(line.text)}`).join('\n\n') : `${speakerName(selected.speaker)}：${selected.text}`;
+  const copyDialogue = () => onCopy(visibleLines.length ? visibleLines.map(line => `${speakerName(line.speaker)}：${displayText(line.text)}`).join('\n\n') : `${speakerName(selected.speaker)}：${selected.text}`);
   const hasMore = detail?.has_more ?? (detail ? detail.total > (detail.offset || 0) + detail.lines.length : false);
 
   return <section className="reader reader-active">
@@ -160,6 +197,7 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
           {chapter && <><span>/</span><span>{chapter}</span></>}
         </div>
         <div className="reader-meta">
+          {detail && <button className="text-button" aria-pressed={showFullText} title={showFullText ? '按需显示屏幕附近的对白，减少内存占用' : '渲染全部已加载对白，支持浏览器查找和辅助技术遍历，会占用更多内存'} onClick={() => setFullTextMode({ missionId: selected.mission_id, enabled: !showFullText })}>{showFullText ? '按需显示' : '显示全文'}</button>}
           {selected.line_id && detail && <button type="button" className="text-button locate-hit-button" onClick={() => scrollToHit('smooth')}>⌖ 定位命中原句</button>}
           {isAdmin && mission && <button className="text-button" onClick={() => setEditing(value => !value)}>补充版本</button>}
         </div>
@@ -190,13 +228,19 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
           </div>
         </div>
         <div className="story-flow">
-          {resolved.groups.map(group => {
+          {groups.map((group, groupIndex) => {
             const isBranchFollowup = Boolean(group.branch && selectedTriggers.has(group.branch));
             return <div className={`story-segment ${isBranchFollowup ? 'branch-followup' : ''}`} key={group.key}>
               {isBranchFollowup && <div className="branch-followup-header"><span>↳ 当前所选回答的后续分支对白</span></div>}
-              {group.segments.map((segment, index) => segment.kind === 'dialogue' ? <div className="dialogue-group" key={`${group.key}-${index}`}>
-                {segment.lines.map(line => <Dialogue key={line.id} line={line} query={query} hit={line.id === selected.line_id} onShare={onShare} />)}
-              </div> : <ChoiceCard key={segment.choice.id} choice={segment.choice} selectedId={resolved.selections[segment.choice.id]} hitId={selected.line_id} query={query} onChoose={line => choose(segment.choice, line)} onShare={onShare} />)}
+              {group.blocks.map((segment, index) => {
+                const lines = segment.kind === 'dialogue' ? segment.lines : segment.choice.options;
+                const key = `${identity}:${lines[0].id}`;
+                return <StoryBlock key={key} scrollRef={scrollRef} estimatedHeight={segment.kind === 'dialogue' ? lines.length * 100 : 110 + lines.length * 70} containsHit={lines.some(line => line.id === selected.line_id)} initiallyVisible={groupIndex === 0 && index < 2} renderAll={showFullText}>
+                  {() => segment.kind === 'dialogue' ? <div className="dialogue-group">
+                    {segment.lines.map(line => <Dialogue key={line.id} line={line} query={query} hit={line.id === selected.line_id} onShare={onShare} />)}
+                  </div> : <ChoiceCard choice={segment.choice} selectedId={resolved.selections[segment.choice.id]} hitId={selected.line_id} query={query} onChoose={line => choose(segment.choice, line)} onShare={onShare} />}
+                </StoryBlock>;
+              })}
             </div>;
           })}
         </div>
@@ -205,6 +249,6 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
       </> : <article className="dialogue-line standalone"><div className="speaker"><span className="speaker-name">{speakerName(selected.speaker)}</span></div><div className="dialogue-body"><p><Highlight text={selected.text} query={query} /></p></div></article>}
       {!!detail?.recalls?.length && <details className="recall-note"><summary>剧情回顾线索</summary>{detail.recalls.map((recall, index) => <p key={index}>{recall.name || recall.title || '回顾段落'}{!recall.verified && <span>关联线索待游戏内核验</span>}{recall.path && <span>{recall.path}</span>}{recall.description && <span>{recall.description}</span>}</p>)}</details>}
     </div>
-    <footer className="reader-actions"><button className="text-button" onClick={() => onCopy(copyText)}>复制当前对白</button><button className="text-button" onClick={() => onCopy(copySource)}>复制出处</button><button className="text-button share-action" onClick={() => onShare(shareAnchor)}>分享定位链接 ↗</button></footer>
+    <footer className="reader-actions"><button className="text-button" onClick={copyDialogue}>复制当前对白</button><button className="text-button" onClick={() => onCopy(copySource)}>复制出处</button><button className="text-button share-action" onClick={() => onShare(shareAnchor)}>分享定位链接 ↗</button></footer>
   </section>;
 }

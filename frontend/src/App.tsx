@@ -210,6 +210,8 @@ export default function App() {
   const [toast, setToast] = useState('');
   const searchId = useRef(0);
   const readerId = useRef(0);
+  const searchController = useRef<AbortController | null>(null);
+  const readerController = useRef<AbortController | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const booted = useRef(false);
   const activeSearch = useRef({ filters: emptyFilters, mode: 'text' as SearchMode, query: '' });
@@ -231,7 +233,25 @@ export default function App() {
     if (next === 'hybrid' && status && indexReady(status.embedding) && !visitorKey && !serverKeyReady(status.embedding)) setShowVisitorKey(true);
   }
 
-  const refresh = useCallback(async () => { const result = await request<Status>('status'); setStatus(result); return result; }, []);
+  const refresh = useCallback(async () => {
+    const result = await request<Status>('status');
+    setStatus(previous => JSON.stringify(previous) === JSON.stringify(result) ? previous : result);
+    return result;
+  }, []);
+  const clearReader = useCallback(() => {
+    readerId.current++;
+    readerController.current?.abort();
+    setSelected(null);
+    setDetail(null);
+    setReading(false);
+    setReaderError('');
+  }, []);
+  useEffect(() => () => {
+    searchId.current++;
+    readerId.current++;
+    searchController.current?.abort();
+    readerController.current?.abort();
+  }, []);
   useEffect(() => {
     let alive = true;
     async function boot() {
@@ -254,6 +274,9 @@ export default function App() {
 
   const selectResult = useCallback(async (result: Result, snapshot?: string, updateRoute = true) => {
     const generation = ++readerId.current;
+    readerController.current?.abort();
+    const controller = new AbortController();
+    readerController.current = controller;
     setSelected(result); setDetail(null); setReaderError('');
     if (updateRoute) {
       const p = new URLSearchParams();
@@ -269,7 +292,7 @@ export default function App() {
     const p = new URLSearchParams();
     if (result.line_id) p.set('line_id', result.line_id);
     if (snapshot) p.set('snapshot', snapshot);
-    try { const value = await request<MissionResponse>(`missions/${encodeURIComponent(result.mission_id)}?${p}`); if (generation === readerId.current) setDetail(value); }
+    try { const value = await request<MissionResponse>(`missions/${encodeURIComponent(result.mission_id)}?${p}`, { signal: controller.signal }); if (generation === readerId.current) setDetail(value); }
     catch (err) { if (generation === readerId.current) setReaderError(errorText(err)); }
     finally { if (generation === readerId.current) setReading(false); }
   }, [searchedQuery]);
@@ -285,23 +308,26 @@ export default function App() {
       return;
     }
     const generation = ++searchId.current;
+    searchController.current?.abort();
+    const controller = new AbortController();
+    searchController.current = controller;
     setSearching(true); setSearchError('');
     try {
       const prepared = criteria.mode === 'hybrid' && criteria.query && semanticContext ? await semanticClient.current.prepare(criteria.query, visitorKey, semanticContext) : {};
       if (generation !== searchId.current) return;
-      const data = await searchRequest<SearchResponse>({ ...criteria, limit: 30, offset, snapshot: offset > 0 ? response?.snapshot : semanticContext?.snapshot || undefined }, prepared);
+      const data = await searchRequest<SearchResponse>({ ...criteria, limit: 30, offset, snapshot: offset > 0 ? response?.snapshot : semanticContext?.snapshot || undefined }, prepared, controller.signal);
       if (generation !== searchId.current) return;
       setSearchedQuery(criteria.query);
       setResponse(old => offset > 0 && old ? { ...data, results: [...old.results, ...data.results] } : data);
       if (offset === 0) {
         activeSearch.current = criteria;
         activeSemantic.current = semanticContext;
-        setSelected(null); setDetail(null); readerId.current++;
+        clearReader();
         history.replaceState(null, '', criteria.query ? `#/search?q=${encodeURIComponent(criteria.query)}` : '#/search');
       }
     } catch (err) { if (generation === searchId.current) setSearchError(errorText(err)); }
     finally { if (generation === searchId.current) setSearching(false); }
-  }, [filters, mode, response?.snapshot, status, visitorKey]);
+  }, [filters, mode, response?.snapshot, status, visitorKey, clearReader]);
 
   const applyFilters = useCallback((nextFilters: Filters) => {
     setFilters(nextFilters);
@@ -309,10 +335,12 @@ export default function App() {
       void runSearch(query, 0, nextFilters);
     } else {
       setResponse(null);
-      setSelected(null);
-      setDetail(null);
+      searchId.current++;
+      searchController.current?.abort();
+      setSearching(false);
+      clearReader();
     }
-  }, [query, runSearch]);
+  }, [query, runSearch, clearReader]);
 
   useEffect(() => {
     const synchronizeKey = (event: StorageEvent) => {
@@ -365,12 +393,14 @@ export default function App() {
     setToast('版本标注已保存'); await refresh();
   }
   async function moreContext() {
-    if (!selected || !detail) return;
+    if (!selected || !detail || reading) return;
     const generation = readerId.current;
     setReading(true);
     const p = new URLSearchParams({ offset: String((detail.offset || 0) + detail.lines.length), limit: '1000' });
     if (detail.snapshot || response?.snapshot) p.set('snapshot', detail.snapshot || response!.snapshot);
-    try { const extra = await request<MissionResponse>(`missions/${encodeURIComponent(selected.mission_id)}?${p}`); if (generation === readerId.current) setDetail(old => {
+    const controller = new AbortController();
+    readerController.current = controller;
+    try { const extra = await request<MissionResponse>(`missions/${encodeURIComponent(selected.mission_id)}?${p}`, { signal: controller.signal }); if (generation === readerId.current) setDetail(old => {
         if (!old) return extra;
         const edges = new Map([...old.edges, ...extra.edges].map(edge => [JSON.stringify(edge), edge]));
         return { ...extra, offset: old.offset, lines: [...old.lines, ...extra.lines], edges: [...edges.values()] };
@@ -382,7 +412,7 @@ export default function App() {
   if (!readable) return <div className="login-screen"><div className="login-stars" aria-hidden="true" /><Login local={status.mode === 'local'} onSuccess={() => { void refresh(); }} /><div className="login-footer">星轨档案 · 崩坏：星穹铁道剧情检索</div></div>;
 
   return <div className={`app-shell ${selected ? 'has-selection' : ''}`}>
-    <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); setSelected(null); setDetail(null); setResponse(null); setQuery(''); setSearchedQuery(''); history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
+    <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); searchId.current++; searchController.current?.abort(); setSearching(false); clearReader(); setResponse(null); setQuery(''); setSearchedQuery(''); history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
       <div className="header-actions"><span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button><button className="icon-button" onClick={() => setTheme(old => old === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? '切换浅色主题' : '切换深色主题'} title="切换主题">{theme === 'dark' ? '☼' : '☾'}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
     </header>
     <section className="search-section">
@@ -434,7 +464,7 @@ export default function App() {
         </button>; })}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
       </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>
     </section>
-    <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={() => setSelected(null)} onVersionSave={saveVersion} onMore={() => void moreContext()} />
+    <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={clearReader} onVersionSave={saveVersion} onMore={() => void moreContext()} />
     </main>
     {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('')} /></Modal>}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}

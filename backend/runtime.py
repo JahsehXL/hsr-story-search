@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 import zipfile
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from urllib.parse import urljoin, urlsplit
@@ -653,7 +654,7 @@ class Runtime:
         # Scaling preserves cosine similarity and safely fits every finite input into float32.
         scale = max(abs(value) for value in vector)
         vector = [value / scale for value in vector]
-        from .search import KNOWN_ENTITIES, _compact, _extract_content_terms, _results, expand_query, filter_sql
+        from .search import _extract_content_terms, _results, expand_query, filter_sql, semantic_context_bonus
         from .data import normalize_text, version_sort_key
         condition, arguments = filter_sql(filters)
         blob = sqlite_vec.serialize_float32(vector)
@@ -682,13 +683,14 @@ class Runtime:
                 r[0]: (r[1] or "")
                 for r in connection.execute(f"SELECT id, text FROM chunks WHERE id IN ({placeholders})", chunk_ids)
             }
+            speakers_by_chunk: dict[int, set[str]] = defaultdict(set)
+            for row in connection.execute(f"SELECT chunk_id,speaker FROM lines WHERE chunk_id IN ({placeholders})", chunk_ids):
+                speakers_by_chunk[row[0]].add(row[1] or "")
         content_terms: list[str] = []
         for variant in expand_query(query):
             for term in _extract_content_terms(variant):
                 if term not in content_terms:
                     content_terms.append(term)
-        entity_terms = [t for t in content_terms if t in KNOWN_ENTITIES]
-        topic_terms = [t for t in content_terms if t not in KNOWN_ENTITIES]
         scored_items = []
         for row in rows:
             cid = row["chunk_id"]
@@ -710,15 +712,7 @@ class Runtime:
                 adj += 0.006
             elif mtype == "其他任务":
                 adj -= 0.025
-            if content_terms:
-                haystack = _compact(full_text + " " + item.get("mission_name", "") + " " + item.get("chapter", ""))
-                line_haystack = _compact(item.get("speaker", "") + " " + item.get("text", ""))
-                ent_ratio = (sum(1 for t in entity_terms if t in haystack) / len(entity_terms)) if entity_terms else 0.0
-                top_ratio = (sum(1 for t in topic_terms if t in haystack) / len(topic_terms)) if topic_terms else 0.0
-                line_top_ratio = (sum(1 for t in topic_terms if t in line_haystack) / len(topic_terms)) if topic_terms else 0.0
-                adj += 0.055 * ent_ratio + 0.13 * top_ratio + 0.035 * line_top_ratio
-                if topic_terms and top_ratio == 0.0:
-                    adj -= 0.035
+            adj += semantic_context_bonus(content_terms, full_text, item, speakers_by_chunk[cid])
             ver_maj, ver_min = version_sort_key(item.get("version", ""))
             adj += ver_maj * 0.0008 + ver_min * 0.00008
             item_copy = dict(item)

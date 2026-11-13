@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStoryModel, focusStory, resolveFullMissionStory, resolveStory, shareStoryAnchor, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
+import { buildStoryModel, focusStory, resolveFullMissionStory, resolveStory, shareStoryAnchor, storyBlocks, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
 import type { DialogueLine } from '../src/types.ts';
 
 function line(id: string, sequence: number, branch: string, values: Partial<DialogueLine> = {}): DialogueLine {
@@ -17,6 +17,26 @@ function fixture() {
     line('unrelated', 3, 'else'),
   ];
 }
+
+test('reader blocks bound long passages and preserve every line and complete choices', () => {
+  const lines = Array.from({ length: 1000 }, (_, index) => line(`long-${index}`, 0, 'start'));
+  const options = [line('choice-a', 0, 'start', { kind: 'option' }), line('choice-b', 0, 'start', { kind: 'option' })];
+  const blocks = storyBlocks([{ kind: 'dialogue', lines }, { kind: 'choice', choice: { id: 'choice-a', options } }]);
+  assert.equal(blocks.length, 64);
+  assert.ok(blocks.every(block => block.kind === 'choice' || block.lines.length <= 16));
+  assert.deepEqual(blocks.flatMap(block => block.kind === 'dialogue' ? block.lines : block.choice.options), [...lines, ...options]);
+  assert.equal(blocks.at(-1)?.kind, 'choice');
+});
+
+test('reader blocks keep a late hit addressable and do not alter resolved branches', () => {
+  const model = buildStoryModel(fixture());
+  const resolved = resolveFullMissionStory(model, 'follow-b');
+  const blocks = resolved.groups.flatMap(group => storyBlocks(group.segments));
+  const renderedLines = blocks.flatMap(block => block.kind === 'dialogue' ? block.lines : block.choice.options);
+  assert.equal(renderedLines.some(item => item.id === 'follow-b'), true);
+  assert.equal(renderedLines.some(item => item.id === 'follow-a'), false);
+  assert.deepEqual(storyBlocks([]), []);
+});
 
 test('a hit option shows its context and selected follow-up without unrelated answers', () => {
   const model = buildStoryModel(fixture());
