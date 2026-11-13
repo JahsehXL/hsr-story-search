@@ -7,6 +7,7 @@ import hmac
 import ipaddress
 import json
 import os
+import posixpath
 import re
 import secrets
 import sys
@@ -21,7 +22,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFi
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from .cloudflare_access import AccessDenied, AccessVerifier
 from .embeddings import EmbeddingError, embed
 from .runtime import Runtime, db_connect
 from .settings import atomic_json
@@ -112,7 +115,16 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         raise ValueError("HSR_PUBLIC_PREFIX 必须以 / 开始和结束")
     admin_code = os.environ.get("HSR_ADMIN_CODE", "")
     access_code = os.environ.get("HSR_ACCESS_CODE", "")
-    if mode == "server" and (len(admin_code) < 12 or (access_code and len(access_code) < 8)):
+    admin_auth = os.environ.get("HSR_ADMIN_AUTH", "code") if mode == "server" else "local"
+    if mode == "server" and admin_auth not in {"code", "cloudflare"}:
+        raise ValueError("HSR_ADMIN_AUTH 必须为 code 或 cloudflare")
+    access_verifier = None
+    if admin_auth == "cloudflare":
+        access_verifier = AccessVerifier(
+            os.environ.get("HSR_CF_TEAM_DOMAIN", ""), os.environ.get("HSR_CF_AUDIENCE", ""),
+            os.environ.get("HSR_CF_ALLOWED_EMAILS", "").split(","),
+        )
+    if mode == "server" and ((admin_auth == "code" and len(admin_code) < 12) or (access_code and len(access_code) < 8)):
         raise ValueError("服务器模式需要 HSR_ADMIN_CODE（至少12字符），可选访问码至少8字符")
     public_readonly = mode == "server" and not access_code
     salt = secrets.token_bytes(32)
@@ -145,6 +157,9 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                         rates.pop(key, None)
 
     def session(request: Request) -> dict | None:
+        identity = getattr(request.state, "cf_identity", None)
+        if identity:
+            return {"admin": True, "expires": identity["expires"], "id": identity["subject"], "email": identity["email"]}
         if mode == "local" and bootstrap_hash is None:
             return {"admin": True, "expires": float("inf"), "id": "local"}
         token = request.cookies.get("hsr_session", "")
@@ -192,6 +207,18 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
     @app.middleware("http")
     async def same_origin(request: Request, call_next):
         body_exceeded = False
+        resource_path = ("/" + posixpath.normpath(request.scope["path"].replace("\\", "/")).lstrip("/")).casefold()
+        protected = (resource_path.rstrip("/") == "/api/v1/admin" or
+                     resource_path.startswith("/api/v1/admin/") or
+                     resource_path.startswith("/assets/admin-"))
+        if protected:
+            if access_verifier:
+                try:
+                    request.state.cf_identity = await run_in_threadpool(access_verifier.verify, request.headers)
+                except AccessDenied:
+                    return JSONResponse({"detail": "请通过写作后台的 Cloudflare Access 认证"}, status_code=403, headers={"Cache-Control": "no-store"})
+            elif resource_path.startswith("/assets/admin-") and not (session(request) or {}).get("admin"):
+                return JSONResponse({"detail": "此资源需要管理员认证"}, status_code=403, headers={"Cache-Control": "no-store"})
         if request.url.path.startswith("/api/"):
             if mode == "local":
                 try:
@@ -283,6 +310,8 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
 
     @app.post("/api/v1/auth/login")
     def login(payload: Login, request: Request, response: Response):
+        if payload.admin and access_verifier:
+            raise HTTPException(403, "请使用统一管理后台的 Cloudflare Access 登录")
         limited("login:" + (request.client.host if request.client else "unknown"), 10)
         expected = admin_hash if payload.admin else access_hash
         if expected is None or not hmac.compare_digest(code_hash(payload.code), expected):
@@ -408,6 +437,12 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
     def settings(user=Depends(administrator)):
         return runtime.settings.public()
 
+    @app.get("/api/v1/admin/overview")
+    def admin_overview(user=Depends(administrator)):
+        return {"version": VERSION, "data": runtime.status_data(), "embedding": runtime.embedding_status(),
+                "jobs": runtime.public_jobs(), "candidates": runtime.public_candidates(),
+                "updates": runtime.settings.public()["updates"]}
+
     @app.put("/api/v1/admin/settings")
     def save_settings(payload: dict, user=Depends(administrator)):
         runtime.upgrade_embedding_state()
@@ -422,6 +457,9 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
 
     @app.post("/api/v1/admin/jobs")
     def new_job(payload: dict, user=Depends(administrator)):
+        if access_verifier and payload.get("kind") in {"import_directory", "import_upload", "download_source", "install_package", "build_index"}:
+            raise ValueError("请先生成并审核候选数据，再选择发布")
+        payload = {**payload, "actor": user.get("email", user["id"])}
         return runtime.add_job(payload)
 
     @app.get("/api/v1/admin/jobs")
@@ -430,6 +468,11 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
 
     @app.post("/api/v1/admin/jobs/{identifier}/{action}")
     def control(identifier: str, action: str, user=Depends(administrator)):
+        if access_verifier and action == "resume":
+            with runtime.jobs_lock:
+                previous = next((job for job in runtime.jobs if job["id"] == identifier), None)
+            if previous and previous["kind"] in {"import_directory", "import_upload", "download_source", "install_package", "build_index"}:
+                raise ValueError("旧的直接安装任务请重新生成候选后审核发布")
         return runtime.control_job(identifier, action)
 
     @app.post("/api/v1/admin/upload/start")

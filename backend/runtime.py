@@ -139,7 +139,7 @@ class Runtime:
         self.root = root.resolve()
         self.mode = mode
         self.settings = Settings(self.root)
-        for directory in ("snapshots", "staging", "uploads", "exports"):
+        for directory in ("snapshots", "staging", "uploads", "exports", "candidates"):
             (self.root / directory).mkdir(exist_ok=True)
         self.lock = threading.RLock()
         self.jobs_lock = threading.RLock()
@@ -271,6 +271,7 @@ class Runtime:
             stats["characters"] = connection.execute("SELECT COUNT(DISTINCT speaker) FROM lines").fetchone()[0]
             stats["narrative_lines"] = connection.execute("SELECT COUNT(*) FROM lines WHERE script!='unlinked' AND mission_id!='unlinked'").fetchone()[0]
             stats["narrative_chunks"] = connection.execute("SELECT COUNT(*) FROM chunks WHERE script!='unlinked' AND mission_id!='unlinked'").fetchone()[0]
+        stats["game_version"] = read_info(path, "source_provenance", {}).get("game_version", "")
         return {"ready": True, "stats": stats, "snapshot": snapshot}
 
     def embedding_status(self, path: Path | None = None) -> dict:
@@ -324,14 +325,117 @@ class Runtime:
         with self.jobs_lock:
             return [{key: value for key, value in job.items() if key not in {"payload"}} for job in self.jobs[-30:]][::-1]
 
+    def candidate_directory(self, identifier: str) -> Path:
+        if not re.fullmatch(r"[a-f0-9]{32}", str(identifier)):
+            raise ValueError("候选标识无效")
+        return self.root / "candidates" / identifier
+
+    def public_candidates(self) -> list[dict]:
+        candidates = []
+        for path in (self.root / "candidates").glob("*/candidate.json"):
+            candidates.append(json.loads(path.read_text(encoding="utf-8")))
+        return sorted(candidates, key=lambda item: item["created_at"], reverse=True)[:30]
+
+    def _candidate_job(self, job: dict, work: Path) -> None:
+        from .data_maintenance import audit_database, build_candidate, compare_databases, fetch_upstream, normalize_provenance
+
+        payload = job["payload"]
+        kind = job["kind"]
+        current, baseline = self.active_path()
+        identifier = payload.get("candidate_id", "")
+        output = work / "story.db"
+        if kind in {"activate_candidate", "index_candidate"}:
+            directory = self.candidate_directory(identifier)
+            record = json.loads((directory / "candidate.json").read_text(encoding="utf-8"))
+            database = directory / "story.db"
+            if kind == "activate_candidate":
+                if record["baseline_snapshot"] != baseline:
+                    raise ValueError("在线快照已变化，请重新生成候选并比较后再发布")
+                audit = audit_database(database)
+                if not audit["ok"]:
+                    raise ValueError("候选数据审计失败：" + "；".join(audit["errors"]))
+                if current and self.embedding_status(current)["index_ready"] and not self.embedding_status(database)["index_ready"] and not payload.get("allow_without_index"):
+                    raise ValueError("候选缺少匹配的完整向量索引，请先构建索引，或明确选择仅关键词发布")
+                self._checkpoint(job)
+                # Publish only if the baseline remained stable during the audit.
+                with self.lock:
+                    if self.active_path()[1] != baseline:
+                        raise ValueError("在线快照已变化，请重新生成候选")
+                    job["snapshot"] = self.install_snapshot(database, "candidate:" + identifier)
+                record.update(status="activated", activated_snapshot=job["snapshot"], activated_at=now())
+                atomic_json(directory / "candidate.json", record)
+                job["candidate_id"] = identifier
+                return
+            if not self.settings.key():
+                raise ValueError("请先配置自己的嵌入服务密钥，再为候选构建索引")
+            shutil.copy2(database, output)
+            self.build_index(output, job)
+            audit = audit_database(output)
+            if not audit["ok"]:
+                raise ValueError("构建后的候选审计失败：" + "；".join(audit["errors"]))
+            self._checkpoint(job)
+            os.replace(output, database)
+            record["audit"] = audit
+            record["summary"] = audit["summary"]
+            atomic_json(directory / "candidate.json", record)
+            job["candidate_id"] = identifier
+            return
+
+        if kind == "prepare_package":
+            database = self.unpack_package(self.upload_path(payload.get("upload_id", "")), work / "package")
+            shutil.copy2(database, output)
+            audit = audit_database(output)
+            report = {"audit": audit, "source": read_info(output, "source_provenance", {})}
+            if current:
+                report["comparison"] = compare_databases(current, output)
+        else:
+            if kind == "prepare_source":
+                repo = self.settings.value["updates"]["repository"]
+                if not re.fullmatch(r"[a-fA-F0-9]{40}", str(payload.get("source_commit", ""))):
+                    raise ValueError("请先核对上游记录，并指定完整的 40 位提交 SHA")
+                provenance = fetch_upstream(repo, str(payload.get("source_commit", "")))
+                expected_title = str(payload.get("source_title", "")).strip()
+                if expected_title and expected_title != provenance["commit_title"]:
+                    raise ValueError("提交标题与 GitHub 实际记录不符")
+                provenance = normalize_provenance({**provenance,
+                    "game_version": payload.get("game_version") or provenance["game_version"],
+                    "game_version_source": payload.get("game_version_source") or provenance["game_version_source"]})
+                archive = work / "source.zip"
+                self._download_source(repo, provenance["commit"], self.settings.value["updates"]["github_mirror"], archive, job)
+                source = work / "source"
+                safe_extract(archive, source)
+            else:
+                provenance = payload.get("provenance", {})
+                if kind == "prepare_upload":
+                    source = work / "source"
+                    safe_extract(self.upload_path(payload.get("upload_id", "")), source)
+                else:
+                    source = Path(str(payload.get("source", ""))).expanduser().resolve()
+            report = build_candidate(source, output, provenance, current, lambda event: self._progress(job, event))
+        if not report["audit"]["ok"]:
+            job["result"] = report
+            raise ValueError("候选数据审计失败：" + "；".join(report["audit"]["errors"]))
+        self._checkpoint(job)
+        identifier = uuid.uuid4().hex
+        directory = self.candidate_directory(identifier)
+        directory.mkdir()
+        shutil.copy2(output, directory / "story.db")
+        record = {"id": identifier, "created_at": now(), "status": "ready", "baseline_snapshot": baseline,
+                  "source": report["audit"].get("info", {}).get("source_provenance", report.get("source", {})), "audit": report["audit"],
+                  "summary": report["audit"]["summary"], "comparison": report.get("comparison", {})}
+        atomic_json(directory / "candidate.json", record)
+        job["candidate_id"] = identifier
+
     def add_job(self, payload: dict) -> dict:
-        kinds = {"import_directory", "import_upload", "download_source", "build_index", "install_package", "check_update", "rollback"}
+        kinds = {"import_directory", "import_upload", "download_source", "build_index", "install_package", "check_update", "rollback",
+                 "prepare_source", "prepare_upload", "prepare_directory", "prepare_package", "index_candidate", "activate_candidate", "audit_current"}
         if payload.get("kind") not in kinds:
             raise ValueError("未知任务类型")
         with self.jobs_lock:
             if any(job["status"] in {"queued", "running", "paused"} for job in self.jobs):
                 raise ValueError("已有数据任务正在运行，请先完成或取消")
             job = {"id": uuid.uuid4().hex, "kind": payload["kind"], "payload": payload, "status": "queued", "phase": "queued", "done": 0, "total": 0, "message": "等待开始", "error": "", "created_at": now()}
+            job["actor"] = payload.get("actor", "local")
             self.jobs.append(job)
             self.controls[job["id"]] = {"pause": threading.Event(), "cancel": threading.Event()}
             self._save_jobs()
@@ -455,7 +559,15 @@ class Runtime:
             payload = job["payload"]
             work = self.root / "staging" / (job["id"] + "-" + uuid.uuid4().hex[:8])
             work.mkdir()
-            if kind == "rollback":
+            if kind.startswith("prepare_") or kind in {"index_candidate", "activate_candidate"}:
+                self._candidate_job(job, work)
+            elif kind == "audit_current":
+                from .data_maintenance import audit_database
+                current, _ = self.active_path()
+                if not current:
+                    raise ValueError("请先安装剧情数据")
+                job["result"] = audit_database(current)
+            elif kind == "rollback":
                 self.rollback()
             elif kind == "check_update":
                 manifest = self.fetch_update_manifest()
@@ -516,7 +628,8 @@ class Runtime:
                     self.build_index(output, job)
                 self._checkpoint(job)
                 self.install_snapshot(output, str(source))
-            self._checkpoint(job)
+            if kind not in {"activate_candidate", "rollback"}:
+                self._checkpoint(job)
             job.update(status="completed", phase="completed", message=job.get("message") if kind == "check_update" else "任务完成", finished_at=now())
         except JobCancelled:
             job.update(status="cancelled", message="任务已取消，可重新继续", finished_at=now())
@@ -547,14 +660,20 @@ class Runtime:
             total = len(rows)
             if not total:
                 raise ValueError("没有可建立向量索引的剧情片段")
-            metadata = read_info(path, "embedding", {})
-            previous_dimension = int(metadata.get("dimension", 0))
             configured_dimension = int(config["embedding"].get("dimensions", 0))
-            if metadata and (not configured_dimension or configured_dimension == previous_dimension) and metadata.get("signature") == embedding_signature(config, previous_dimension):
-                for row in connection.execute("SELECT c.content_hash,v.embedding FROM chunks c JOIN chunk_vectors v ON v.chunk_id=c.id WHERE c.script!='unlinked' AND c.mission_id!='unlinked'"):
-                    self._checkpoint(job)
-                    cache.execute("INSERT OR IGNORE INTO vectors(namespace,hash,vector,dimension) VALUES(?,?,?,?)", (namespace, row[0], row[1], previous_dimension))
-                cache.commit()
+            active, _ = self.active_path()
+            seed_paths = [path]
+            if active and active.resolve() != path.resolve():
+                seed_paths.append(active)
+            for seed_path in seed_paths:
+                metadata = read_info(seed_path, "embedding", {})
+                previous_dimension = int(metadata.get("dimension", 0))
+                if metadata and (not configured_dimension or configured_dimension == previous_dimension) and metadata.get("signature") == embedding_signature(config, previous_dimension):
+                    with db_connect(seed_path) as seed:
+                        for row in seed.execute("SELECT c.content_hash,v.embedding FROM chunks c JOIN chunk_vectors v ON v.chunk_id=c.id WHERE c.script!='unlinked' AND c.mission_id!='unlinked'"):
+                            self._checkpoint(job)
+                            cache.execute("INSERT OR IGNORE INTO vectors(namespace,hash,vector,dimension) VALUES(?,?,?,?)", (namespace, row[0], row[1], previous_dimension))
+                    cache.commit()
             connection.execute("DROP TABLE IF EXISTS chunk_vectors")
             connection.commit()
             dimension = 0
@@ -771,6 +890,9 @@ class Runtime:
         return target
 
     def install_package(self, archive: Path, work: Path) -> str:
+        return self.install_snapshot(self.unpack_package(archive, work), "data-package")
+
+    def unpack_package(self, archive: Path, work: Path) -> Path:
         safe_extract(archive, work)
         manifest_path = work / "manifest.json"
         if not manifest_path.is_file() or manifest_path.stat().st_size > 1024 * 1024:
@@ -782,7 +904,8 @@ class Runtime:
         database = work / "story.db"
         if not database.is_file() or database.stat().st_size != info.get("size") or checksum(database) != info.get("sha256"):
             raise ValueError("剧情数据文件大小或 SHA-256 校验失败")
-        return self.install_snapshot(database, "data-package")
+        self.validate_database(database)
+        return database
 
     def rollback(self) -> None:
         with self.lock:

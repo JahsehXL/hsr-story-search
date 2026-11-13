@@ -14,6 +14,8 @@ from typing import Callable
 
 
 SCHEMA_VERSION = 1
+IMPORTER_VERSION = 2
+SCRIPT_PATTERNS = ("Config/Level/Mission/*/Act/*.json", "Story/Discussion/Mission/*/*.json", "Story/Mission/*/*.json")
 TYPE_NAMES = {"Main": "开拓任务", "Branch": "支线任务", "Companion": "同行任务", "Daily": "每日任务"}
 TAG_PATTERN = re.compile(r"<[^>]*>")
 RUBY_PATTERN = re.compile(r"\{RUBY_B#([^}]*)\}(.*?)\{RUBY_E#\}")
@@ -462,16 +464,29 @@ class DatasetBuilder:
                 ))
 
 
-def import_data(source: Path, output: Path, progress: Callable[[dict], None] | None = None) -> dict:
-    source, output = Path(source).resolve(), Path(output).resolve()
-    if not (source / "TextMap/TextMapCHS.json").is_file():
-        candidates = [child for child in source.iterdir() if child.is_dir() and (child / "TextMap/TextMapCHS.json").is_file()] if source.is_dir() else []
+def source_root(source: Path | str) -> Path:
+    """Resolve one raw snapshot, including the wrapper directory in GitHub ZIPs."""
+    source = Path(source).resolve()
+    def has_textmap(path: Path) -> bool:
+        return any((path / "TextMap" / name).is_file() for name in ("TextMapCHS.json", "TextMapMainCHS.json"))
+    if not has_textmap(source):
+        candidates = [child for child in source.iterdir() if child.is_dir() and has_textmap(child)] if source.is_dir() else []
         if len(candidates) == 1:
             source = candidates[0]
         else:
             raise ValueError("请选择包含 TextMap、ExcelOutput、Story 和 Config 的数据目录")
-    if not (source / "ExcelOutput/TalkSentenceConfig.json").is_file():
-        raise ValueError("数据缺少 TalkSentenceConfig.json")
+    for name in ("TalkSentenceConfig.json", "MainMission.json"):
+        if not (source / "ExcelOutput" / name).is_file():
+            raise ValueError(f"数据缺少 {name}")
+    return source
+
+
+def source_scripts(source: Path) -> list[Path]:
+    return sorted({path for pattern in SCRIPT_PATTERNS for path in source.glob(pattern)})
+
+
+def import_data(source: Path, output: Path, progress: Callable[[dict], None] | None = None) -> dict:
+    source, output = source_root(source), Path(output).resolve()
     if output.exists():
         raise ValueError("输出数据库已存在，请使用新的暂存路径")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -487,9 +502,7 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
         report("metadata", 0, 1, "读取中文文字和任务资料")
         builder.load_metadata()
         conn.commit()
-        files = sorted(set(source.glob("Config/Level/Mission/*/Act/*.json")) |
-                       set(source.glob("Story/Discussion/Mission/*/*.json")) |
-                       set(source.glob("Story/Mission/*/*.json")))
+        files = source_scripts(source)
         if not files:
             raise ValueError("数据目录中没有找到任务剧情脚本")
         for index, path in enumerate(files, 1):
@@ -497,7 +510,11 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
             if index % 200 == 0 or index == len(files):
                 conn.commit()
                 report("scripts", index, len(files), f"已解析 {index} / {len(files)} 个剧情脚本")
+        direct_lines = builder.line_count
         builder.import_timeline_sentences()
+        timeline_recovered_lines = builder.line_count - direct_lines
+        if builder.line_count == 0:
+            raise ValueError("没有解析出任何剧情台词，请检查文字映射、任务表和脚本格式")
         conn.commit()
         report("unlinked", 0, 1, "统计未关联文字及整理回顾候选")
         unlinked_sentence_count = len(set(builder.sentences) - builder.used_sentences)
@@ -512,6 +529,8 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
             "imported_at": datetime.now(timezone.utc).isoformat(),
             "unresolved_sentences": builder.unresolved_sentences,
             "schema_version": SCHEMA_VERSION,
+            "importer_version": IMPORTER_VERSION,
+            "timeline_recovered_lines": timeline_recovered_lines,
             "excluded_unlinked_sentences": unlinked_sentence_count,
             "verified_versions": verified_versions,
         }

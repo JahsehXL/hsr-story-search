@@ -1,54 +1,60 @@
-# ✦ 星轨档案 (StarRail Story Archive)
+# 星轨档案 · StarRail Story Archive
 
-面向《崩坏：星穹铁道》任务剧情的本地与自托管检索工具。通过统一的剧本台词本界面查找台词、角色和任务，查看剧情前后文、首次开放版本与玩家分支选项对应的后续对白。
+《崩坏：星穹铁道》剧情检索与阅读工具。按台词、角色或情节描述查找任务，查看前后文、玩家对话分支和任务首次开放版本。
 
-- 🌐 **在线网页版**：[https://hsr.jahsehxx.dpdns.org](https://hsr.jahsehxx.dpdns.org)（直达短域名） / [https://jahsehxx.dpdns.org/tools/hsr/](https://jahsehxx.dpdns.org/tools/hsr/)
-- 📦 **Windows 便携包 & 预计算向量数据包**：[前往 GitHub Releases 下载](https://github.com/JahsehXL/hsr-story-search/releases)
+**推荐使用在线版，打开即可检索。**
 
----
+[进入星轨档案](https://hsr.jahsehxx.dpdns.org) · [从个人博客进入](https://jahsehxx.dpdns.org/tools/hsr/)
 
-## ✨ 功能特性
+## 在线使用
 
-- **剧本台词本阅读体验**：采用左列角色、右列台词的台词本排版，打开结果自动平滑滚动并高亮定位命中原句，顶部标注任务类型（开拓 / 续闻 / 同行 / 冒险 / 日常）、所属世界与首次开放版本。
-- **平铺直出玩家分支选项**：告别繁琐的下拉折叠菜单——所有玩家对话选项（`❖ 选项 1 / 2 / 3`）直接平铺展示，默认自动衔接第一项的后续分支对白，点击任意选项即可即时切换对应的专属回应。
-- **三种搜索模式与多维筛选**：
-  - **描述找剧情（推荐，需配置语义密钥）**：融合 `BAAI/bge-m3`（1024 维）语义向量与人物/地点/主题线索，适合只记得画面、人物或大致情节经过的自然语言搜索。
-  - **精准关键词（默认，无需密钥）**：支持原句匹配、忽略标点连写、空格多词组合（跨角色名 + 台词联合检索，如 `三月七 星穹列车`、`老杨 休息`）以及常见角色外号映射（`老杨`、`小三月`、`饮月君`、`大黑塔`、`卡妈`、`萨姆`、`忘归人`、`鸟叔` 等）。
-  - **错字容错（无需密钥）**：独立容错模糊匹配入口（至少 3 个字），适合记得大概台词但怕记混个别字或漏字时使用。
-  - **多维筛选**：支持按**世界**、**首次开放版本**、**任务类型**和**角色**组合筛选，搜索框旁提供 `?`/`!` 快速说明弹窗。
-- **一次建索引，全员零成本共享**：发布包与在线站点已内置 **`1.0` ~ `4.7` 共 2,866 个任务、180,363 条对白、100,496 个剧情片段**的 `BAAI/bge-m3` 预计算向量索引。访客或本地用户无需重新计算全库向量，只需配置自己的 API Key 即可秒级使用“描述找剧情”搜索。
+- **精准关键词**默认可用，支持原句、忽略标点、空格组合搜索和常见角色外号，例如“老杨”“卡妈”。
+- **错字容错**适合台词记忆不完整的情况，查询至少输入 3 个字。
+- **描述找剧情**融合 `BAAI/bge-m3` 语义向量和人物、地点、主题线索，适合只记得大致情节时使用，需要配置自己的语义密钥。
+- 可以组合筛选世界、首次开放版本、任务类型和角色。打开结果后定位命中台词，阅读上下文并切换玩家选项对应的后续对白。
 
----
+使用描述搜索时，点击“🔑 语义密钥”，填写支持 `BAAI/bge-m3` 的嵌入服务 API Key。例如可以使用硅基流动，也可以填写兼容 OpenAI `/embeddings` 接口的自定义服务地址。模型与参数需要匹配站点的预计算索引，服务费用和额度以对应提供商说明为准。[硅基流动](https://cloud.siliconflow.cn)
 
-## 🚀 快速上手
+语义密钥保存在当前浏览器的 `localStorage`。查询优先由浏览器直连嵌入服务，直连受阻时由本站服务端在内存中单次代发。已有完整预计算索引时，使用者只需计算查询向量。
 
-### 方式一：直接使用在线版 / Windows 便携包
+## Windows 本地版
 
-1. **下载运行**：在 [Releases](https://github.com/JahsehXL/hsr-story-search/releases) 下载 `StarrailStorySearch-Windows-x64-*.zip`，解压后双击 `StorySearch.exe` 即可自动在浏览器打开（已内置完整剧情库与 `BAAI/bge-m3` 向量索引）；或直接访问[在线网页版](https://hsr.jahsehxx.dpdns.org)。
-2. **开启“描述找剧情”语义搜索（推荐）**：
-   - 前往 [硅基流动 SiliconFlow](https://cloud.siliconflow.cn) 按 **注册账号 → 实名认证 → 创建 API Key** 获取密钥（平台对 `BAAI/bge-m3` 模型提供免费额度；如已有其他兼容 OpenAI `/embeddings` 接口且使用 `BAAI/bge-m3` 的服务商，也可在界面中填自定义地址）。
-   - 点击搜索栏下方的 **「🔑 语义密钥」** 按钮，粘贴你的 API Key 并保存，再切换到 **「描述找剧情」** 模式即可。
-   - 密钥仅保存在你当前浏览器的 `localStorage` 中；搜索时优先由浏览器直连服务商计算单条查询向量，直连受阻时由服务端仅在内存中单次代发（不落盘、不扣减服务端配额）。
+**不再主动维护 Windows 便携版，不推荐使用历史便携包，建议使用在线版。** 历史包可能缺少后续的程序修复和游戏剧情数据，已有发布文件保留供需要者参考。[历史发布与数据包](https://github.com/JahsehXL/hsr-story-search/releases)
 
-### 方式二：从源码本地运行
+### 复制提示词，扔给 AI 直接部署
 
-需要 Python 3.12 与 Node.js 24：
+需要离线使用或自行构建 Windows 版本时，把下面的提示词交给能够在你电脑上执行命令的 AI，并提供项目目录及已有的数据包。
+
+```text
+请帮我在这台 Windows 电脑上从源码构建并运行“星轨档案”。
+仓库地址为 https://github.com/JahsehXL/hsr-story-search 。
+请先阅读仓库中的 docs/windows-build.md，按指南检查环境、安装依赖、
+构建网页、使用 StorySearch.spec 打包，并完成程序自检和本地运行验证。
+使用独立构建目录，保留已有文件与数据。
+如果我提供了 hsr-data-*.zip，请校验并将其中的剧情和预计算索引加入便携目录。
+缺少数据时说明可用的数据来源与覆盖版本，询问我需要使用哪一份数据。
+完成后给出 ZIP 的绝对路径、SHA-256、源码版本、数据版本与实际验证结果。
+```
+
+环境要求、完整命令、可选的数据打包步骤和故障排查见构建指南。[Windows AI 构建与本地部署指南](docs/windows-build.md)
+
+## 从源码运行
+
+开发环境使用 Python 3.12 与 Node.js 24。以下 PowerShell 命令在项目根目录执行。
 
 ```powershell
-python -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 npm --prefix frontend ci
 npm --prefix frontend run build
 .\.venv\Scripts\python.exe launcher.py
 ```
 
----
+启动器会在回环地址启动服务并打开浏览器。首次启动的空实例需要导入剧情数据。
 
-## 🐳 Docker 自托管部署
+## Docker 自托管
 
-支持 Linux `ARM64` 与 `AMD64` 主机原生构建。
-
-1. 在项目目录创建 `.env`（当 `HSR_ACCESS_CODE` 留空时默认开启**公开只读检索**，仅后台管理接口需要 `HSR_ADMIN_CODE`）：
+支持 Linux `ARM64` 与 `AMD64` 主机原生构建。创建 `.env`，配置访问与管理凭据。`HSR_ACCESS_CODE` 留空时允许公开只读检索。
 
 ```dotenv
 HSR_ACCESS_CODE=
@@ -56,7 +62,7 @@ HSR_ADMIN_CODE=replace-with-a-different-random-admin-code
 HSR_PUBLIC_PREFIX=/
 ```
 
-2. 创建持久化数据目录并启动容器（`compose.yaml` 默认限制 `mem_limit: 3g`、`cpus: 1.5`，监听 `127.0.0.1:8765`）：
+创建持久化目录并启动。`compose.yaml` 默认监听 `127.0.0.1:8765`，限制内存 `3g` 和 CPU `1.5`。
 
 ```sh
 mkdir -p data
@@ -65,7 +71,7 @@ chmod 600 .env
 docker compose up -d --build
 ```
 
-3. 配置 Nginx HTTPS 反向代理（若挂载在 `/tools/hsr/` 等子路径，请将 `.env` 中的 `HSR_PUBLIC_PREFIX` 设为 `/tools/hsr/`，并在 Nginx 中将子路径转发至 `http://127.0.0.1:8765/`）：
+通过 Nginx 提供 HTTPS 反向代理。挂载在 `/tools/hsr/` 等子路径时，把 `HSR_PUBLIC_PREFIX` 改为 `/tools/hsr/`，并将该子路径转发至 `http://127.0.0.1:8765/`。
 
 ```nginx
 location / {
@@ -79,15 +85,17 @@ location / {
 }
 ```
 
----
+## 数据导入与维护
 
-## 📚 数据准备与向量索引
+本地实例可从“管理 → 数据与更新”导入数据。本站的服务器实例与个人博客共用 `/admin/` 管理后台，沿用写作后台的 Cloudflare Access 认证，提供候选数据、差异审阅、索引、发布和回滚。
 
-首次部署空实例时，可在右上角 **「⚙ 管理 → 数据与更新」** 中选择以下任一方式导入数据：
+服务器使用 CF 认证时，设置 `HSR_ADMIN_AUTH=cloudflare`、`HSR_CF_TEAM_DOMAIN`、`HSR_CF_AUDIENCE` 和 `HSR_CF_ALLOWED_EMAILS`，复用写作应用的团队域名、AUD 与账号白名单。配置示例和源站验证要求见说明。[认证配置示例](.env.example) · [管理后台与认证](docs/admin-security.md)
 
-1. **安装预处理数据包（推荐）**：直接上传 Releases 中的 `hsr-data-*.zip`，一键导入完整剧情数据库、版本标注与预计算好的 `BAAI/bge-m3` 语义向量索引。
-2. **从社区数据仓库在线拉取**：默认数据源为 [`DimbreathBot/TurnBasedGameData`](https://github.com/DimbreathBot/TurnBasedGameData)，支持配置 HTTPS GitHub 镜像前缀（兼容常见 `gh-proxy` 格式）。
-3. **导入本地原始解包目录或 ZIP**：目录结构如下：
+- **预处理数据包**使用 `hsr-data-*.zip`，其中可包含剧情数据库、版本标注与预计算向量索引。覆盖版本以对应发布说明为准。[数据包下载](https://github.com/JahsehXL/hsr-story-search/releases)
+- **原始游戏数据**默认来源为社区仓库，可导入目录或 ZIP，也可以按管理流程从仓库拉取固定提交。[TurnBasedGameData](https://github.com/DimbreathBot/TurnBasedGameData)
+- **任务首次开放版本**由逐任务核验的元数据提供，主要依据 BWIKI 任务页面，遵循 CC BY-NC-SA 4.0 署名要求。游戏数据版本、程序版本与任务首次版本分别记录。[崩坏：星穹铁道 BWIKI](https://wiki.biligame.com/sr/)
+
+原始目录应包含以下文件结构。
 
 ```text
 TurnBasedGameData/
@@ -95,39 +103,31 @@ TurnBasedGameData/
 ├── ExcelOutput/
 ├── Story/
 └── TextMap/
-    └── TextMapCHS.json
+    └── TextMapCHS.json（或 TextMapMainCHS.json）
 ```
 
-### 版本元数据核验
+后续游戏更新由维护者或其 AI 按文档检查来源提交、构建候选数据、核验差异并验证检索结果。导入诊断、已知修复原因和版本记录方法见维护流程。[数据导入、修复与 AI 维护指南](docs/data-maintenance.md)
 
-`backend/resources/mission_versions.json` 内置逐任务核对的首次开放版本，数据源自 [崩坏：星穹铁道 BWIKI](https://wiki.biligame.com/sr/) 任务页面（遵循 CC BY-NC-SA 4.0 署名要求）。可通过以下命令同步或离线刷新：
+任务版本元数据保存在 `backend/resources/mission_versions.json`。可用以下命令同步或从本地缓存刷新，完成后按维护指南核验结果。
 
 ```sh
 python scripts/sync_versions.py --database /path/to/story.db
 python scripts/sync_versions.py --database /path/to/story.db --offline
 ```
 
----
-
-## 🛠 开发测试与打包
+## 开发验证
 
 ```powershell
-# 运行后端测试
 .\.venv\Scripts\python.exe -m pytest tests -q
-
-# 运行前端测试与构建
 npm --prefix frontend test
 npm --prefix frontend run build
-
-# 打包 Windows 独立运行目录 (dist/StorySearch)
-.\.venv\Scripts\pyinstaller.exe StorySearch.spec --noconfirm
 ```
 
----
+Windows 打包和产物验证的命令见专门指南。[Windows 构建指南](docs/windows-build.md)
 
-## 📄 开源许可与声明
+## 开源许可与声明
 
 Copyright (C) 2026 JahsehXL。
 
-- 本项目原创程序代码采用 **GNU Affero General Public License v3.0 (`AGPL-3.0-only`)** 授权，完整条款见 [LICENSE](LICENSE)。程序按“现状”提供，适用协议中的无担保与责任限制条款。
-- 第三方任务版本元数据、游戏文本、字体（Archivo，SIL Open Font License）与运行依赖的授权说明详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。原始剧情文本与游戏相关素材的著作权归米哈游（miHoYo / HoYoverse）及相关权利人所有。
+- 本项目原创程序代码采用 **GNU Affero General Public License v3.0 (`AGPL-3.0-only`)** 授权，完整条款见许可文件。程序按“现状”提供，适用协议中的无担保与责任限制条款。[LICENSE](LICENSE)
+- 第三方任务版本元数据、游戏文本、字体（Archivo，SIL Open Font License）与运行依赖的授权说明见第三方声明。原始剧情文本与游戏相关素材的著作权归米哈游（miHoYo / HoYoverse）及相关权利人所有。[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)

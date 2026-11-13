@@ -1,7 +1,7 @@
 services:
   story-search:
     build: .
-    image: hsr-story-search:0.5.0
+    image: hsr-story-search:0.6.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:8765:8765"
