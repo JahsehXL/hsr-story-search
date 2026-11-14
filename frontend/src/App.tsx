@@ -215,12 +215,6 @@ export default function App() {
     setTheme(next);
     try { localStorage.setItem('hsr-theme', next); } catch { /* The current session still switches theme. */ }
   }
-  useEffect(() => {
-    // Mirror theme changes made outside this component (e.g. following the system setting).
-    const observer = new MutationObserver(() => setTheme(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    return () => observer.disconnect();
-  }, []);
   const [mode, setMode] = useState<SearchMode>('text');
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
