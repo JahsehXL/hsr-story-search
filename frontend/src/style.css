@@ -863,4 +863,3 @@ progress::-webkit-progress-value { background: var(--accent); }
   :root[data-theme="dark"] .reader-scroll { padding-inline: 12px; }
   :root[data-theme="dark"] .dialogue-line { padding-block: 12px; }
 }
-
