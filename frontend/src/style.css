@@ -51,10 +51,10 @@
   --subtle: #9c9ca5;
   --line: #404043;
   --line-soft: #2c2c2f;
-  --accent: #f4f4f5;
-  --accent-text: #17171a;
-  --accent-soft: rgba(244, 244, 245, 0.07);
-  --accent-border: rgba(244, 244, 245, 0.16);
+  --accent: #a9c7b5;
+  --accent-text: #15221b;
+  --accent-soft: rgba(169, 199, 181, 0.1);
+  --accent-border: rgba(169, 199, 181, 0.32);
   --blue: #c4c4cc;
   --danger: #ef6f6f;
   --success: #56c98d;
