@@ -92,6 +92,11 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
 .mode-tabs button:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--surface-hover); color: var(--text-strong); }
 .mode-tabs button[aria-pressed="true"] { color: var(--accent-text); font-weight: 600; background: var(--accent); box-shadow: 0 2px 8px rgba(140, 101, 40, 0.25); }
 .mode-tabs button[aria-pressed="true"]:hover:not(:disabled) { filter: brightness(1.06); }
+.mode-tabs .mode-recommended { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.mode-recommend { font-size: 10px; line-height: 1.5; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; }
+@media (max-width: 640px) {
+  .mode-tabs .mode-recommended { flex-direction: column; gap: 2px; }
+}
 .mode-help-wrap { position: relative; display: inline-flex; align-items: center; }
 .mode-help-button { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--accent-border); background: var(--surface-raised); color: var(--accent); font-size: 15px; font-weight: 700; line-height: 1; transition: background 150ms, color 150ms, border-color 150ms, transform 120ms; }
 .mode-help-button:hover, .mode-help-button:focus-visible { background: var(--accent); color: var(--accent-text); border-color: var(--accent); transform: scale(1.04); }

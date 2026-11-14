@@ -185,7 +185,9 @@ function VisitorKeyForm({ initialKey, initialEndpoint, model, save, clear }: { i
       <strong>获取 API Key 步骤（以硅基流动为例）：</strong><br />
       打开<a href="https://cloud.siliconflow.cn" target="_blank" rel="noreferrer">硅基流动控制台 ↗</a> → 注册 / 登录账号 → 完成实名认证 → 在「API 密钥」页面新建并复制 Key。
     </div>
-    <p>不强求必须使用硅基流动，其他兼容 OpenAI Embeddings 接口的平台也可使用，但<strong>必须使用 <code>{targetModel}</code> 模型</strong>（与当前剧情向量索引一致）。默认使用硅基流动仅因该模型在平台免费，具体以服务商政策为准。<a href="https://www.siliconflow.cn/pricing" target="_blank" rel="noreferrer">查看模型价格 ↗</a></p>
+    <p>请选择提供 <strong><code>{targetModel}</code></strong> 的 OpenAI Embeddings 兼容服务，模型与参数需匹配当前索引。本站的 BGE-M3 索引由硅基流动生成，仅作配置示例，不构成推广。</p>
+    {targetModel === 'BAAI/bge-m3' && <p>硅基流动的标准版 BGE-M3 目前免费，Cloudflare Workers AI 也提供每日免费额度，具体以平台政策为准。<a href="https://www.siliconflow.cn/pricing" target="_blank" rel="noreferrer">硅基流动价格 ↗</a> · <a href="https://developers.cloudflare.com/workers-ai/platform/pricing/" target="_blank" rel="noreferrer">CF 免费额度 ↗</a></p>}
+    <p>使用其他模型需自行重建剧情索引。<a href="https://github.com/JahsehXL/hsr-story-search/blob/main/docs/embedding-models.md" target="_blank" rel="noreferrer">模型配置与索引构建 ↗</a></p>
     <label className="field"><span>API Key</span><input type="password" autoComplete="new-password" value={key} onChange={event => setKey(event.target.value)} placeholder={`粘贴支持 ${targetModel} 的 API Key`} aria-label="语义搜索 API Key" maxLength={4096} /></label>
     <details className="custom-endpoint-box" open={Boolean(initialEndpoint)}>
       <summary>其他兼容平台接口地址（可选，留空默认使用硅基流动）</summary>
@@ -206,7 +208,7 @@ export default function App() {
   const [query, setQuery] = useState(initial.current.query);
   const [searchedQuery, setSearchedQuery] = useState(initial.current.query);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
-  const [mode, setMode] = useState<SearchMode>('text');
+  const [mode, setMode] = useState<SearchMode>('hybrid');
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
@@ -229,7 +231,7 @@ export default function App() {
   const readerController = useRef<AbortController | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const booted = useRef(false);
-  const activeSearch = useRef({ filters: emptyFilters, mode: 'text' as SearchMode, query: '' });
+  const activeSearch = useRef({ filters: emptyFilters, mode: 'hybrid' as SearchMode, query: '' });
   const activeSemantic = useRef<SemanticContext | null>(null);
   const semanticClient = useRef(createSemanticSearchClient());
 
@@ -444,7 +446,7 @@ export default function App() {
         <div className="search-methods">
           <span className="mode-label" id="search-mode-label">搜索模式</span>
           <div className="mode-tabs" role="group" aria-labelledby="search-mode-label">
-            <button type="button" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={!indexReady(status.embedding) ? '管理员建立完整语义索引后可用' : undefined} onClick={() => chooseMode('hybrid')}>描述找剧情</button>
+            <button type="button" className="mode-recommended" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={!indexReady(status.embedding) ? '完整语义索引就绪后可用' : '默认推荐：只记得大概情节也能搜'} onClick={() => chooseMode('hybrid')}>描述找剧情<span className="mode-recommend">推荐</span></button>
             <button type="button" aria-pressed={mode === 'text'} onClick={() => chooseMode('text')}>精准关键词</button>
             <button type="button" aria-pressed={mode === 'fuzzy'} onClick={() => chooseMode('fuzzy')}>错字容错</button>
           </div>
@@ -474,7 +476,7 @@ export default function App() {
       <div className="results-scroll" aria-busy={searching} aria-live="polite">
         {searchError && <div className="inline-alert" role="alert">{searchError}</div>}
         {response?.notice && <div className="search-notice">{response.notice}</div>}
-        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨'].map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : response.results.length === 0 ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{response.results.map((result, index) => {
+        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{(mode === 'hybrid' ? ['流萤带开拓者逛游乐园', '丹恒与景元在幽囚狱交谈', '卡芙卡在空间站唤醒开拓者'] : ['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨']).map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : response.results.length === 0 ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{response.results.map((result, index) => {
           const title = cleanMissionName(result.mission_name, result.chapter, result.world);
           return <button className={`result-card ${selected?.line_id === result.line_id && selected?.script === result.script ? 'selected' : ''}`} key={`${result.chunk_id}:${result.line_id}:${index}`} onClick={() => void selectResult(result, response.snapshot)}>
           <div className="result-topline">
@@ -498,16 +500,16 @@ export default function App() {
         <section className="mode-help-card">
           <div className="mode-help-card-head">
             <h4>描述找剧情</h4>
-            <span className="mode-help-tag recommended">推荐 · 需先配置密钥</span>
+            <span className="mode-help-tag recommended">默认推荐 · 需先配置密钥</span>
           </div>
           <p><strong>适用场景：</strong>完全想不起原台词，只记得人物、地点或大概发生过什么事。</p>
           <p><strong>怎么输入：</strong>像平时说话一样把画面或情节写出来，例如 <code>流萤带开拓者逛游乐园</code>、<code>星期日和知更鸟在剧场争论</code>。</p>
-          <p className="mode-help-note">首次使用点旁边的「🔑 语义密钥」按引导免费领取并填写即可，密钥只保存在当前浏览器。</p>
+          <p className="mode-help-note">首次使用点旁边的「🔑 语义密钥」按引导配置支持当前模型的服务，密钥只保存在当前浏览器。</p>
         </section>
         <section className="mode-help-card">
           <div className="mode-help-card-head">
             <h4>精准关键词</h4>
-            <span className="mode-help-tag">默认 · 无需密钥</span>
+            <span className="mode-help-tag">无需密钥</span>
           </div>
           <p><strong>适用场景：</strong>记得一两句原台词、任务名字、版本号、角色名或玩家常用外号。</p>
           <p><strong>怎么输入：</strong>直接输入台词或词组，多个词可用<strong>空格隔开</strong>一起搜，例如 <code>生命因何而沉睡</code>、<code>三月七 星穹列车</code>；也支持常见外号（如搜 <code>老杨</code> 会同时搜 <code>瓦尔特</code>、搜 <code>萨姆</code> 会同时搜 <code>流萤</code>）。</p>
@@ -520,7 +522,7 @@ export default function App() {
           <p><strong>适用场景：</strong>大致记得某句台词怎么说，但记混了个别字、中间漏了字或有错别字，用「精准关键词」搜不到时。</p>
           <p><strong>怎么输入：</strong>至少输入 3 个字，例如把“生命因何而沉睡”记成 <code>生命因啥而沉睡</code> 也能找回原剧情。</p>
         </section>
-        <p className="mode-help-summary">日常使用建议：配置好「🔑 语义密钥」后推荐用「描述找剧情」，怎么想就怎么搜；免配置默认是「精准关键词」，适合搜原话或人名；记错字切「错字容错」。</p>
+        <p className="mode-help-summary">日常使用建议：默认推荐「描述找剧情」，配置好「🔑 语义密钥」后描述你记得的情节；记得原话或人名时可切换到免密钥的「精准关键词」；记错字时切换「错字容错」。</p>
       </div>
     </Modal>}
     {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} initialEndpoint={visitorEndpoint} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('', '')} /></Modal>}

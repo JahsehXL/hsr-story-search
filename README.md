@@ -1,8 +1,8 @@
 # 星轨档案 · StarRail Story Archive
 
-原始剧情数据来自 [TurnBasedGameData](https://github.com/DimbreathBot/TurnBasedGameData)，主要依赖 [React](https://github.com/react/react)、[FastAPI](https://github.com/fastapi/fastapi)、[sqlite-vec](https://github.com/asg017/sqlite-vec) 和 [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz)，语义索引使用 [BGE-M3](https://huggingface.co/BAAI/bge-m3)。
+原始剧情数据来自 [TurnBasedGameData](https://github.com/DimbreathBot/TurnBasedGameData)。
 
-《崩坏：星穹铁道》剧情检索与阅读工具。按台词、角色或情节描述查找任务，查看前后文、玩家对话分支和任务首次开放版本。
+主要为《崩坏：星穹铁道》内容创作者提供方便。**最适合只记得大概情节、想找回对应剧情和台词的情况**，直接描述人物、场景或发生过的事，就能查找相关片段并阅读上下文，帮助整理角色文案、寻找二创素材，制作视频、剪辑、解析与考据内容。
 
 **推荐使用在线版，打开即可检索。**
 
@@ -10,14 +10,18 @@
 
 ## 在线使用
 
-- **精准关键词**默认可用，支持原句、忽略标点、空格组合搜索和常见角色外号，例如“老杨”“卡妈”。
-- **错字容错**适合台词记忆不完整的情况，查询至少输入 3 个字。
-- **描述找剧情**融合 `BAAI/bge-m3` 语义向量和人物、地点、主题线索，适合只记得大致情节时使用，需要配置自己的语义密钥。
+- **描述找剧情（默认推荐）**支持用模糊的情节印象找剧情，例如“流萤带开拓者逛游乐园”。它融合 `BAAI/bge-m3` 语义向量和人物、地点、主题线索，需要配置自己的语义密钥。
+- **精准关键词**无需密钥，支持原句、忽略标点、空格组合搜索和常见角色外号，例如“老杨”“卡妈”。
+- **错字容错**适合记得大致台词、但有错字或漏字的情况，查询至少输入 3 个字。
 - 可以组合筛选世界、首次开放版本、任务类型和角色。打开结果后定位命中台词，阅读上下文并切换玩家选项对应的后续对白。
 
-使用描述搜索时，点击“🔑 语义密钥”，填写支持 `BAAI/bge-m3` 的嵌入服务 API Key。例如可以使用硅基流动，也可以填写兼容 OpenAI `/embeddings` 接口的自定义服务地址。模型与参数需要匹配站点的预计算索引，服务费用和额度以对应提供商说明为准。[硅基流动](https://cloud.siliconflow.cn)
+使用描述搜索时，点击“🔑 语义密钥”，填写提供 `BAAI/bge-m3` 的兼容嵌入服务 API Key。本站现有索引由硅基流动生成，服务商仅作配置示例，不构成推广。提供同一模型且参数匹配的兼容服务均可选择。
 
-语义密钥保存在当前浏览器的 `localStorage`。查询优先由浏览器直连嵌入服务，直连受阻时由本站服务端在内存中单次代发。已有完整预计算索引时，使用者只需计算查询向量。
+硅基流动的标准版 `BAAI/bge-m3` 目前免费，Cloudflare Workers AI 也提供 BGE-M3，可在每日免费额度内使用。费用、额度与速率限制以平台当前政策为准。[硅基流动价格](https://www.siliconflow.cn/pricing) · [Cloudflare 免费额度](https://developers.cloudflare.com/workers-ai/platform/pricing/)
+
+如需使用其他嵌入模型，可以自行部署并重新构建剧情向量索引，查询使用与该索引相同的模型和参数。兼容接口、Cloudflare 配置与重建步骤见文档。[模型配置与索引构建](docs/embedding-models.md)
+
+语义密钥保存在当前浏览器的 `localStorage`。默认硅基流动连接优先从浏览器直连，失败时由本站服务端在内存中单次代发；自定义接口使用浏览器直连。已有完整预计算索引时，使用者只需计算查询向量。
 
 ## Windows 本地版
 
