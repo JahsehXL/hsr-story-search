@@ -714,4 +714,7 @@ progress::-webkit-progress-value { background: var(--accent); }
 
 /* Use the light theme's gold fill and readable gold text on dark surfaces. */
 :root[data-theme="dark"] .primary,
-:root[data-theme="dark"] .mode-tabs button[aria-pressed="true"] { background: var(--accent-fill); }
+:root[data-theme="dark"] .mode-tabs button[aria-pressed="true"],
+:root[data-theme="dark"] .mode-help-button:hover,
+:root[data-theme="dark"] .mode-help-button:focus-visible,
+:root[data-theme="dark"] .choice-option.is-selected .choice-option-badge { background: var(--accent-fill); }
