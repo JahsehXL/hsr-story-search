@@ -35,32 +35,30 @@
   color: var(--text);
 }
 
-/* Warm "night parchment" dark palette: warm-tinted charcoal surfaces that keep
-   the light theme's gold identity. Contrast: text/reader 13.3, muted 8.1,
-   subtle/raised 5.3, accent 9.3, fill text 6.7 (WCAG ratios). */
+/* Cool charcoal / slate dark palette without yellow/brown tint. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0f0e0c;
-  --surface: #171614;
-  --surface-raised: #25231f;
-  --surface-hover: #2e2b26;
-  --reader: #1c1a17;
-  --input: #201e1b;
-  --text: #e6e1d8;
-  --text-strong: #f3eee5;
-  --muted: #b5ad9f;
-  --subtle: #9d9588;
-  --line: #45403a;
-  --line-soft: #2e2b27;
-  --accent: #d8b57a;
-  --accent-fill: #c09450;
-  --accent-text: #1a1309;
-  --accent-soft: rgba(216, 181, 122, 0.12);
-  --accent-border: rgba(216, 181, 122, 0.34);
-  --blue: #c9c2b5;
+  --bg: #0c0e12;
+  --surface: #13171d;
+  --surface-raised: #1a2029;
+  --surface-hover: #232b36;
+  --reader: #10141a;
+  --input: #171c24;
+  --text: #e3e8ef;
+  --text-strong: #f4f7fb;
+  --muted: #9ba7b8;
+  --subtle: #8492a6;
+  --line: #313b49;
+  --line-soft: #212832;
+  --accent: #7cb0eb;
+  --accent-fill: #2b5b8e;
+  --accent-text: #f5f9ff;
+  --accent-soft: rgba(124, 176, 235, 0.12);
+  --accent-border: rgba(124, 176, 235, 0.36);
+  --blue: #94b8e0;
   --danger: #ef7a6f;
   --success: #6cc99a;
-  --shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
+  --shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
 }
 
 .header-actions .theme-toggle {
@@ -713,15 +711,15 @@ progress::-webkit-progress-value { background: var(--accent); }
 :root[data-theme="dark"] .dialogue-line:hover { background: rgba(255, 255, 255, 0.025); }
 :root[data-theme="dark"] .modal-backdrop { background: rgba(5, 5, 7, 0.78); }
 
-/* Use the light theme's gold fill and readable gold text on dark surfaces. */
+/* Cool slate-blue fills and borders on dark surfaces. */
 :root[data-theme="dark"] .primary,
 :root[data-theme="dark"] .mode-tabs button[aria-pressed="true"],
 :root[data-theme="dark"] .mode-help-button:hover,
 :root[data-theme="dark"] .mode-help-button:focus-visible,
 :root[data-theme="dark"] .choice-option.is-selected .choice-option-badge { background: var(--accent-fill); color: var(--accent-text); border-color: var(--accent-fill); }
-:root[data-theme="dark"] .mode-tabs button[aria-pressed="true"] { box-shadow: 0 0 0 1px rgba(216, 181, 122, 0.45), 0 4px 14px rgba(192, 148, 80, 0.22); }
+:root[data-theme="dark"] .mode-tabs button[aria-pressed="true"] { box-shadow: 0 0 0 1px rgba(124, 176, 235, 0.45), 0 4px 14px rgba(43, 91, 142, 0.3); }
 
-/* Dark layering: rely on visible borders and a warm wash, since surface steps are subtle. */
+/* Dark layering: rely on visible cool-slate borders and subtle steel-blue washes. */
 :root[data-theme="dark"] .workspace,
 :root[data-theme="dark"] .modal,
 :root[data-theme="dark"] .filter-menu,
@@ -729,12 +727,12 @@ progress::-webkit-progress-value { background: var(--accent); }
 :root[data-theme="dark"] .results-panel { border-right-color: var(--line); }
 :root[data-theme="dark"] .result-card { border-color: var(--line-soft); }
 :root[data-theme="dark"] .result-card:hover { border-color: var(--line); }
-:root[data-theme="dark"] .result-card.selected { background: rgba(216, 181, 122, 0.07); border-color: var(--accent); }
+:root[data-theme="dark"] .result-card.selected { background: rgba(124, 176, 235, 0.08); border-color: var(--accent); }
 
-/* Replace light-only black shadows with gold outlines and glows. */
-:root[data-theme="dark"] mark { background: rgba(216, 181, 122, 0.2); color: var(--text-strong); box-shadow: inset 0 -1px 0 var(--accent); }
-:root[data-theme="dark"] .line-hit { background: rgba(216, 181, 122, 0.1) !important; box-shadow: 0 0 0 1px var(--accent-border), 0 0 18px rgba(216, 181, 122, 0.08); }
-:root[data-theme="dark"] .choice-card { box-shadow: 0 0 0 1px rgba(216, 181, 122, 0.08), 0 8px 24px rgba(0, 0, 0, 0.35); }
-:root[data-theme="dark"] .choice-option.is-selected { background: rgba(216, 181, 122, 0.12); }
-:root[data-theme="dark"] .search-form:focus-within { box-shadow: 0 0 0 3px rgba(216, 181, 122, 0.16); }
+/* Replace dark-surface shadows with cool-blue outlines and glows. */
+:root[data-theme="dark"] mark { background: rgba(124, 176, 235, 0.22); color: var(--text-strong); box-shadow: inset 0 -1px 0 var(--accent); }
+:root[data-theme="dark"] .line-hit { background: rgba(124, 176, 235, 0.1) !important; box-shadow: 0 0 0 1px var(--accent-border), 0 0 18px rgba(124, 176, 235, 0.09); }
+:root[data-theme="dark"] .choice-card { box-shadow: 0 0 0 1px rgba(124, 176, 235, 0.1), 0 8px 24px rgba(0, 0, 0, 0.35); }
+:root[data-theme="dark"] .choice-option.is-selected { background: rgba(124, 176, 235, 0.12); }
+:root[data-theme="dark"] .search-form:focus-within { box-shadow: 0 0 0 3px rgba(124, 176, 235, 0.18); }
 :root[data-theme="dark"] .primary:disabled { opacity: 0.55; }

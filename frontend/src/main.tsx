@@ -4,7 +4,7 @@ import App from './App';
 import './style.css';
 
 const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
-const THEME_COLORS: Record<string, string> = { light: '#eef0ed', dark: '#0f0e0c' };
+const THEME_COLORS: Record<string, string> = { light: '#eef0ed', dark: '#0c0e12' };
 
 function savedTheme(): string | null {
   try {
