@@ -35,31 +35,32 @@
   color: var(--text);
 }
 
-/* Folia default dark palette, with secondary text lifted for small UI labels.
-   Reference: chthollyphile/folia-major, baseThemes.ts and settings/kit/kitTheme.ts. */
+/* Warm "night parchment" dark palette: warm-tinted charcoal surfaces that keep
+   the light theme's gold identity. Contrast: text/reader 13.3, muted 8.1,
+   subtle/raised 5.3, accent 9.3, fill text 6.7 (WCAG ratios). */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #09090b;
-  --surface: #141416;
-  --surface-raised: #232327;
-  --surface-hover: #2b2b30;
-  --reader: #1a1a1d;
-  --input: #232327;
-  --text: #e4e4e7;
-  --text-strong: #f4f4f5;
-  --muted: #adadb3;
-  --subtle: #9c9ca5;
-  --line: #404043;
-  --line-soft: #2c2c2f;
-  --accent: #d0ae76;
-  --accent-fill: #8c6528;
-  --accent-text: #fffdf8;
-  --accent-soft: rgba(208, 174, 118, 0.1);
-  --accent-border: rgba(208, 174, 118, 0.32);
-  --blue: #c4c4cc;
-  --danger: #ef6f6f;
-  --success: #56c98d;
-  --shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
+  --bg: #0f0e0c;
+  --surface: #171614;
+  --surface-raised: #25231f;
+  --surface-hover: #2e2b26;
+  --reader: #1c1a17;
+  --input: #201e1b;
+  --text: #e6e1d8;
+  --text-strong: #f3eee5;
+  --muted: #b5ad9f;
+  --subtle: #9d9588;
+  --line: #45403a;
+  --line-soft: #2e2b27;
+  --accent: #d8b57a;
+  --accent-fill: #c09450;
+  --accent-text: #1a1309;
+  --accent-soft: rgba(216, 181, 122, 0.12);
+  --accent-border: rgba(216, 181, 122, 0.34);
+  --blue: #c9c2b5;
+  --danger: #ef7a6f;
+  --success: #6cc99a;
+  --shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
 }
 
 .header-actions .theme-toggle {
@@ -702,7 +703,7 @@ progress::-webkit-progress-value { background: var(--accent); }
 /* Both themes share component geometry, typography and responsive rules. */
 :root[data-theme="dark"] .brand-mark,
 :root[data-theme="dark"] .version-tag { color: var(--accent); }
-:root[data-theme="dark"] .mission-badge.type-main { color: #d4d4d8; background: rgba(244, 244, 245, 0.07); border-color: rgba(244, 244, 245, 0.16); }
+:root[data-theme="dark"] .mission-badge.type-main { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); }
 :root[data-theme="dark"] .mission-badge.type-interlude,
 :root[data-theme="dark"] .mission-badge.type-gap { color: #efb27e; }
 :root[data-theme="dark"] .mission-badge.type-companion { color: #d3b0e4; }
@@ -717,4 +718,23 @@ progress::-webkit-progress-value { background: var(--accent); }
 :root[data-theme="dark"] .mode-tabs button[aria-pressed="true"],
 :root[data-theme="dark"] .mode-help-button:hover,
 :root[data-theme="dark"] .mode-help-button:focus-visible,
-:root[data-theme="dark"] .choice-option.is-selected .choice-option-badge { background: var(--accent-fill); }
+:root[data-theme="dark"] .choice-option.is-selected .choice-option-badge { background: var(--accent-fill); color: var(--accent-text); border-color: var(--accent-fill); }
+:root[data-theme="dark"] .mode-tabs button[aria-pressed="true"] { box-shadow: 0 0 0 1px rgba(216, 181, 122, 0.45), 0 4px 14px rgba(192, 148, 80, 0.22); }
+
+/* Dark layering: rely on visible borders and a warm wash, since surface steps are subtle. */
+:root[data-theme="dark"] .workspace,
+:root[data-theme="dark"] .modal,
+:root[data-theme="dark"] .filter-menu,
+:root[data-theme="dark"] .mode-help-tooltip { border-color: var(--line); }
+:root[data-theme="dark"] .results-panel { border-right-color: var(--line); }
+:root[data-theme="dark"] .result-card { border-color: var(--line-soft); }
+:root[data-theme="dark"] .result-card:hover { border-color: var(--line); }
+:root[data-theme="dark"] .result-card.selected { background: rgba(216, 181, 122, 0.07); border-color: var(--accent); }
+
+/* Replace light-only black shadows with gold outlines and glows. */
+:root[data-theme="dark"] mark { background: rgba(216, 181, 122, 0.2); color: var(--text-strong); box-shadow: inset 0 -1px 0 var(--accent); }
+:root[data-theme="dark"] .line-hit { background: rgba(216, 181, 122, 0.1) !important; box-shadow: 0 0 0 1px var(--accent-border), 0 0 18px rgba(216, 181, 122, 0.08); }
+:root[data-theme="dark"] .choice-card { box-shadow: 0 0 0 1px rgba(216, 181, 122, 0.08), 0 8px 24px rgba(0, 0, 0, 0.35); }
+:root[data-theme="dark"] .choice-option.is-selected { background: rgba(216, 181, 122, 0.12); }
+:root[data-theme="dark"] .search-form:focus-within { box-shadow: 0 0 0 3px rgba(216, 181, 122, 0.16); }
+:root[data-theme="dark"] .primary:disabled { opacity: 0.55; }
