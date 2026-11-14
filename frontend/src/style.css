@@ -61,7 +61,7 @@
   --gold: #d1b788;
 }
 
-.theme-toggle {
+.header-actions .theme-toggle {
   width: 36px;
   min-width: 36px;
   height: 36px;
