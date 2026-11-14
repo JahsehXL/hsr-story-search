@@ -183,7 +183,8 @@ function VisitorKeyForm({ initialKey, initialEndpoint, model, save, clear }: { i
   }}>
     <div className="visitor-key-steps">
       <strong>获取 API Key 步骤（以硅基流动为例）：</strong><br />
-      打开<a href="https://cloud.siliconflow.cn" target="_blank" rel="noreferrer">硅基流动控制台 ↗</a> → 注册 / 登录账号 → 完成实名认证 → 在「API 密钥」页面新建并复制 Key。
+      打开<a href="https://cloud.siliconflow.cn" target="_blank" rel="noreferrer">硅基流动控制台 ↗</a> → 注册 / 登录账号 → 完成实名认证 → 在「API 密钥」页面新建并复制 Key。<br />
+      <a href="https://jahsehxx.dpdns.org/posts/siliconflow-api-key-guide/" target="_blank" rel="noreferrer">不会申请？查看 API Key 图文教程 ↗</a>
     </div>
     <p>请选择提供 <strong><code>{targetModel}</code></strong> 的 OpenAI Embeddings 兼容服务，模型与参数需匹配当前索引。本站的 BGE-M3 索引由硅基流动生成，仅作配置示例，不构成推广。</p>
     {targetModel === 'BAAI/bge-m3' && <p>硅基流动的标准版 BGE-M3 目前免费，Cloudflare Workers AI 也提供每日免费额度，具体以平台政策为准。<a href="https://www.siliconflow.cn/pricing" target="_blank" rel="noreferrer">硅基流动价格 ↗</a> · <a href="https://developers.cloudflare.com/workers-ai/platform/pricing/" target="_blank" rel="noreferrer">CF 免费额度 ↗</a></p>}
