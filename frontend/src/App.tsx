@@ -208,6 +208,13 @@ export default function App() {
   const [query, setQuery] = useState(initial.current.query);
   const [searchedQuery, setSearchedQuery] = useState(initial.current.query);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [theme, setTheme] = useState(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
+  function toggleTheme() {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    setTheme(next);
+    try { localStorage.setItem('hsr-theme', next); } catch { /* The current session still switches theme. */ }
+  }
   const [mode, setMode] = useState<SearchMode>('text');
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
@@ -432,7 +439,7 @@ export default function App() {
 
   return <div className={`app-shell ${selected ? 'has-selection' : ''}`}>
     <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); searchId.current++; searchController.current?.abort(); setSearching(false); clearReader(); setResponse(null); setQuery(''); setSearchedQuery(''); history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
-      <div className="header-actions">{status.mode === 'server' && <a className="header-button" href="/" aria-label="返回首页" title="返回首页"><span aria-hidden="true">←</span><span>返回首页</span></a>}<span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
+      <div className="header-actions"><button className="header-button theme-toggle" onClick={toggleTheme} aria-label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'} title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span><span>{theme === 'dark' ? '浅色' : '深色'}</span></button>{status.mode === 'server' && <a className="header-button" href="/" aria-label="返回首页" title="返回首页"><span aria-hidden="true">←</span><span>返回首页</span></a>}<span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}</div>
     </header>
     <section className="search-section">
       <form className="search-form" onSubmit={e => { e.preventDefault(); void runSearch(query); }}>
