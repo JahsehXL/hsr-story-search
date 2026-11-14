@@ -1,5 +1,7 @@
 # 星轨档案 · StarRail Story Archive
 
+原始剧情数据来自 [TurnBasedGameData](https://github.com/DimbreathBot/TurnBasedGameData)，主要依赖 [React](https://github.com/react/react)、[FastAPI](https://github.com/fastapi/fastapi)、[sqlite-vec](https://github.com/asg017/sqlite-vec) 和 [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz)，语义索引使用 [BGE-M3](https://huggingface.co/BAAI/bge-m3)。
+
 《崩坏：星穹铁道》剧情检索与阅读工具。按台词、角色或情节描述查找任务，查看前后文、玩家对话分支和任务首次开放版本。
 
 **推荐使用在线版，打开即可检索。**
@@ -87,9 +89,7 @@ location / {
 
 ## 数据导入与维护
 
-本地实例可从“管理 → 数据与更新”导入数据。本站的服务器实例与个人博客共用 `/admin/` 管理后台，沿用写作后台的 Cloudflare Access 认证，提供候选数据、差异审阅、索引、发布和回滚。
-
-服务器使用 CF 认证时，设置 `HSR_ADMIN_AUTH=cloudflare`、`HSR_CF_TEAM_DOMAIN`、`HSR_CF_AUDIENCE` 和 `HSR_CF_ALLOWED_EMAILS`，复用写作应用的团队域名、AUD 与账号白名单。配置示例和源站验证要求见说明。[认证配置示例](.env.example) · [管理后台与认证](docs/admin-security.md)
+本地运行时，可在“管理 → 数据与更新”导入剧情数据。
 
 - **预处理数据包**使用 `hsr-data-*.zip`，其中可包含剧情数据库、版本标注与预计算向量索引。覆盖版本以对应发布说明为准。[数据包下载](https://github.com/JahsehXL/hsr-story-search/releases)
 - **原始游戏数据**默认来源为社区仓库，可导入目录或 ZIP，也可以按管理流程从仓库拉取固定提交。[TurnBasedGameData](https://github.com/DimbreathBot/TurnBasedGameData)
