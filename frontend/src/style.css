@@ -35,30 +35,29 @@
   color: var(--text);
 }
 
-/* Midnight reading surfaces use cool neutral light and restrained accents. */
+/* Neutral charcoal surfaces with a muted lavender accent. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0c1017;
-  --surface: #111720;
-  --surface-raised: #1a2330;
-  --surface-hover: #202c3c;
-  --reader: #141b26;
-  --input: #161f2c;
-  --text: #cbd3df;
-  --text-strong: #edf2fa;
-  --muted: #a0aec1;
-  --subtle: #8d9cb1;
-  --line: #334257;
-  --line-soft: #263244;
-  --accent: #c3d4ed;
-  --accent-text: #111b2b;
-  --accent-soft: rgba(157, 187, 229, 0.09);
-  --accent-border: rgba(167, 195, 233, 0.3);
-  --blue: #acc9f1;
-  --danger: #f1a09b;
-  --success: #91c8b2;
+  --bg: #111113;
+  --surface: #18181b;
+  --surface-raised: #232327;
+  --surface-hover: #2c2c32;
+  --reader: #1c1c20;
+  --input: #242428;
+  --text: #d4d4dc;
+  --text-strong: #f1f0f5;
+  --muted: #b0afb9;
+  --subtle: #9c9ba7;
+  --line: #414147;
+  --line-soft: #303036;
+  --accent: #bca9e8;
+  --accent-text: #241c35;
+  --accent-soft: rgba(188, 169, 232, 0.1);
+  --accent-border: rgba(188, 169, 232, 0.32);
+  --blue: #b4c2e4;
+  --danger: #e9a09f;
+  --success: #a0c8b3;
   --shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
-  --gold: #d1b788;
 }
 
 .header-actions .theme-toggle {
@@ -700,13 +699,13 @@ progress::-webkit-progress-value { background: var(--accent); }
 
 /* Both themes share component geometry, typography and responsive rules. */
 :root[data-theme="dark"] .brand-mark,
-:root[data-theme="dark"] .version-tag { color: var(--gold); }
-:root[data-theme="dark"] .mission-badge.type-main { color: #b8cbe5; background: #1c2a3d; border-color: #324864; }
+:root[data-theme="dark"] .version-tag { color: var(--accent); }
+:root[data-theme="dark"] .mission-badge.type-main { color: #c7b9e7; background: #2a2634; border-color: #494056; }
 :root[data-theme="dark"] .mission-badge.type-interlude,
 :root[data-theme="dark"] .mission-badge.type-gap { color: #efb27e; }
 :root[data-theme="dark"] .mission-badge.type-companion { color: #d3b0e4; }
 :root[data-theme="dark"] .mission-badge.type-branch { color: #94c6e6; }
 :root[data-theme="dark"] .mission-badge.type-daily { color: #94d1ad; }
-:root[data-theme="dark"] .version-label { color: var(--gold); background: rgba(209, 183, 136, 0.07); border-color: rgba(209, 183, 136, 0.22); }
+:root[data-theme="dark"] .version-label { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); }
 :root[data-theme="dark"] .dialogue-line:hover { background: rgba(255, 255, 255, 0.025); }
-:root[data-theme="dark"] .modal-backdrop { background: rgba(5, 9, 16, 0.78); }
+:root[data-theme="dark"] .modal-backdrop { background: rgba(5, 5, 7, 0.78); }
