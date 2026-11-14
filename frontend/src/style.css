@@ -51,10 +51,11 @@
   --subtle: #9c9ca5;
   --line: #404043;
   --line-soft: #2c2c2f;
-  --accent: #a9c7b5;
-  --accent-text: #15221b;
-  --accent-soft: rgba(169, 199, 181, 0.1);
-  --accent-border: rgba(169, 199, 181, 0.32);
+  --accent: #d0ae76;
+  --accent-fill: #8c6528;
+  --accent-text: #fffdf8;
+  --accent-soft: rgba(208, 174, 118, 0.1);
+  --accent-border: rgba(208, 174, 118, 0.32);
   --blue: #c4c4cc;
   --danger: #ef6f6f;
   --success: #56c98d;
@@ -710,3 +711,7 @@ progress::-webkit-progress-value { background: var(--accent); }
 :root[data-theme="dark"] .version-label { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); }
 :root[data-theme="dark"] .dialogue-line:hover { background: rgba(255, 255, 255, 0.025); }
 :root[data-theme="dark"] .modal-backdrop { background: rgba(5, 5, 7, 0.78); }
+
+/* Use the light theme's gold fill and readable gold text on dark surfaces. */
+:root[data-theme="dark"] .primary,
+:root[data-theme="dark"] .mode-tabs button[aria-pressed="true"] { background: var(--accent-fill); }
