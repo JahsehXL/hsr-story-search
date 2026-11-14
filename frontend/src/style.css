@@ -690,3 +690,8 @@ progress::-webkit-progress-value { background: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+@media (max-width: 480px) {
+  .header-button > span:nth-child(2) { display: none; }
+  .header-button { min-width: 34px; justify-content: center; }
+}
