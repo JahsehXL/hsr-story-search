@@ -2,7 +2,7 @@
 
 原始剧情数据来自 [TurnBasedGameData](https://github.com/DimbreathBot/TurnBasedGameData)。
 
-主要为《崩坏：星穹铁道》内容创作者提供方便。**最适合只记得大概情节、想找回对应剧情和台词的情况**，直接描述人物、场景或发生过的事，就能查找相关片段并阅读上下文，帮助整理角色文案、寻找二创素材，制作视频、剪辑、解析与考据内容。
+主要为《崩坏：星穹铁道》内容创作者提供方便。**最适合只记得大概情节、想找回对应剧情和台词的情况**，直接描述人物、场景或发生过的事，就能查找相关片段并阅读上下文，帮助整理角色文案、寻找二创素材，制作视频、剪辑、解析与考据内容。还可以快速找到剧情所属版本和任务，方便回到游戏中定位场景、录制素材。
 
 **推荐使用在线版，打开即可检索。**
 
@@ -19,7 +19,7 @@
 
 硅基流动的标准版 `BAAI/bge-m3` 目前免费，Cloudflare Workers AI 也提供 BGE-M3，可在每日免费额度内使用。费用、额度与速率限制以平台当前政策为准。[硅基流动价格](https://www.siliconflow.cn/pricing) · [Cloudflare 免费额度](https://developers.cloudflare.com/workers-ai/platform/pricing/)
 
-如需使用其他嵌入模型，可以自行部署并重新构建剧情向量索引，查询使用与该索引相同的模型和参数。兼容接口、Cloudflare 配置与重建步骤见文档。[模型配置与索引构建](docs/embedding-models.md)
+如需使用其他嵌入模型，可以自行部署并重新构建剧情向量索引，查询使用与该索引相同的模型和参数。兼容接口、Cloudflare 配置与重建步骤见文档。[构建与部署指南](docs/build-guide.md)
 
 语义密钥保存在当前浏览器的 `localStorage`。默认硅基流动连接优先从浏览器直连，失败时由本站服务端在内存中单次代发；自定义接口使用浏览器直连。已有完整预计算索引时，使用者只需计算查询向量。
 
@@ -34,15 +34,17 @@
 ```text
 请帮我在这台 Windows 电脑上从源码构建并运行“星轨档案”。
 仓库地址为 https://github.com/JahsehXL/hsr-story-search 。
-请先阅读仓库中的 docs/windows-build.md，按指南检查环境、安装依赖、
+请先阅读仓库中的 docs/build-guide.md，按指南检查环境、安装依赖、
 构建网页、使用 StorySearch.spec 打包，并完成程序自检和本地运行验证。
 使用独立构建目录，保留已有文件与数据。
 如果我提供了 hsr-data-*.zip，请校验并将其中的剧情和预计算索引加入便携目录。
+如果我指定其他嵌入模型，请按同一指南配置服务、重建并验证完整索引，
+导出标准数据包后再加入便携目录，同时记录模型参数与调用额度。
 缺少数据时说明可用的数据来源与覆盖版本，询问我需要使用哪一份数据。
 完成后给出 ZIP 的绝对路径、SHA-256、源码版本、数据版本与实际验证结果。
 ```
 
-环境要求、完整命令、可选的数据打包步骤和故障排查见构建指南。[Windows AI 构建与本地部署指南](docs/windows-build.md)
+环境要求、完整命令、可选的数据打包步骤和故障排查见构建指南。[构建与部署指南](docs/build-guide.md)
 
 ## 从源码运行
 
@@ -127,7 +129,7 @@ npm --prefix frontend test
 npm --prefix frontend run build
 ```
 
-Windows 打包和产物验证的命令见专门指南。[Windows 构建指南](docs/windows-build.md)
+Windows 打包和产物验证的命令见专门指南。[构建与部署指南](docs/build-guide.md)
 
 ## 开源许可与声明
 

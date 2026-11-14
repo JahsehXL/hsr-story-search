@@ -187,7 +187,7 @@ function VisitorKeyForm({ initialKey, initialEndpoint, model, save, clear }: { i
     </div>
     <p>请选择提供 <strong><code>{targetModel}</code></strong> 的 OpenAI Embeddings 兼容服务，模型与参数需匹配当前索引。本站的 BGE-M3 索引由硅基流动生成，仅作配置示例，不构成推广。</p>
     {targetModel === 'BAAI/bge-m3' && <p>硅基流动的标准版 BGE-M3 目前免费，Cloudflare Workers AI 也提供每日免费额度，具体以平台政策为准。<a href="https://www.siliconflow.cn/pricing" target="_blank" rel="noreferrer">硅基流动价格 ↗</a> · <a href="https://developers.cloudflare.com/workers-ai/platform/pricing/" target="_blank" rel="noreferrer">CF 免费额度 ↗</a></p>}
-    <p>使用其他模型需自行重建剧情索引。<a href="https://github.com/JahsehXL/hsr-story-search/blob/main/docs/embedding-models.md" target="_blank" rel="noreferrer">模型配置与索引构建 ↗</a></p>
+    <p>使用其他模型需自行重建剧情索引。<a href="https://github.com/JahsehXL/hsr-story-search/blob/main/docs/build-guide.md" target="_blank" rel="noreferrer">构建与部署指南 ↗</a></p>
     <label className="field"><span>API Key</span><input type="password" autoComplete="new-password" value={key} onChange={event => setKey(event.target.value)} placeholder={`粘贴支持 ${targetModel} 的 API Key`} aria-label="语义搜索 API Key" maxLength={4096} /></label>
     <details className="custom-endpoint-box" open={Boolean(initialEndpoint)}>
       <summary>其他兼容平台接口地址（可选，留空默认使用硅基流动）</summary>
