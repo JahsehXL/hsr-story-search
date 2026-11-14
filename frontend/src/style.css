@@ -35,28 +35,29 @@
   color: var(--text);
 }
 
-/* Neutral charcoal surfaces with a muted lavender accent. */
+/* Folia default dark palette, with secondary text lifted for small UI labels.
+   Reference: chthollyphile/folia-major, baseThemes.ts and settings/kit/kitTheme.ts. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #111113;
-  --surface: #18181b;
+  --bg: #09090b;
+  --surface: #141416;
   --surface-raised: #232327;
-  --surface-hover: #2c2c32;
-  --reader: #1c1c20;
-  --input: #242428;
-  --text: #d4d4dc;
-  --text-strong: #f1f0f5;
-  --muted: #b0afb9;
-  --subtle: #9c9ba7;
-  --line: #414147;
-  --line-soft: #303036;
-  --accent: #bca9e8;
-  --accent-text: #241c35;
-  --accent-soft: rgba(188, 169, 232, 0.1);
-  --accent-border: rgba(188, 169, 232, 0.32);
-  --blue: #b4c2e4;
-  --danger: #e9a09f;
-  --success: #a0c8b3;
+  --surface-hover: #2b2b30;
+  --reader: #1a1a1d;
+  --input: #232327;
+  --text: #e4e4e7;
+  --text-strong: #f4f4f5;
+  --muted: #adadb3;
+  --subtle: #9c9ca5;
+  --line: #404043;
+  --line-soft: #2c2c2f;
+  --accent: #f4f4f5;
+  --accent-text: #17171a;
+  --accent-soft: rgba(244, 244, 245, 0.07);
+  --accent-border: rgba(244, 244, 245, 0.16);
+  --blue: #c4c4cc;
+  --danger: #ef6f6f;
+  --success: #56c98d;
   --shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
 }
 
@@ -700,7 +701,7 @@ progress::-webkit-progress-value { background: var(--accent); }
 /* Both themes share component geometry, typography and responsive rules. */
 :root[data-theme="dark"] .brand-mark,
 :root[data-theme="dark"] .version-tag { color: var(--accent); }
-:root[data-theme="dark"] .mission-badge.type-main { color: #c7b9e7; background: #2a2634; border-color: #494056; }
+:root[data-theme="dark"] .mission-badge.type-main { color: #d4d4d8; background: rgba(244, 244, 245, 0.07); border-color: rgba(244, 244, 245, 0.16); }
 :root[data-theme="dark"] .mission-badge.type-interlude,
 :root[data-theme="dark"] .mission-badge.type-gap { color: #efb27e; }
 :root[data-theme="dark"] .mission-badge.type-companion { color: #d3b0e4; }
