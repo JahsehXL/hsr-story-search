@@ -208,7 +208,7 @@ export default function App() {
   const [query, setQuery] = useState(initial.current.query);
   const [searchedQuery, setSearchedQuery] = useState(initial.current.query);
   const [filters, setFilters] = useState<Filters>(emptyFilters);
-  const [mode, setMode] = useState<SearchMode>('hybrid');
+  const [mode, setMode] = useState<SearchMode>('text');
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
@@ -231,7 +231,7 @@ export default function App() {
   const readerController = useRef<AbortController | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const booted = useRef(false);
-  const activeSearch = useRef({ filters: emptyFilters, mode: 'hybrid' as SearchMode, query: '' });
+  const activeSearch = useRef({ filters: emptyFilters, mode: 'text' as SearchMode, query: '' });
   const activeSemantic = useRef<SemanticContext | null>(null);
   const semanticClient = useRef(createSemanticSearchClient());
 
@@ -446,7 +446,7 @@ export default function App() {
         <div className="search-methods">
           <span className="mode-label" id="search-mode-label">搜索模式</span>
           <div className="mode-tabs" role="group" aria-labelledby="search-mode-label">
-            <button type="button" className="mode-recommended" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={!indexReady(status.embedding) ? '完整语义索引就绪后可用' : '默认推荐：只记得大概情节也能搜'} onClick={() => chooseMode('hybrid')}>描述找剧情<span className="mode-recommend">推荐</span></button>
+            <button type="button" className="mode-recommended" aria-pressed={mode === 'hybrid'} disabled={!indexReady(status.embedding)} title={!indexReady(status.embedding) ? '完整语义索引就绪后可用' : '推荐：只记得大概情节也能搜'} onClick={() => chooseMode('hybrid')}>描述找剧情<span className="mode-recommend">推荐</span></button>
             <button type="button" aria-pressed={mode === 'text'} onClick={() => chooseMode('text')}>精准关键词</button>
             <button type="button" aria-pressed={mode === 'fuzzy'} onClick={() => chooseMode('fuzzy')}>错字容错</button>
           </div>
@@ -500,7 +500,7 @@ export default function App() {
         <section className="mode-help-card">
           <div className="mode-help-card-head">
             <h4>描述找剧情</h4>
-            <span className="mode-help-tag recommended">默认推荐 · 需先配置密钥</span>
+            <span className="mode-help-tag recommended">推荐 · 需先配置密钥</span>
           </div>
           <p><strong>适用场景：</strong>完全想不起原台词，只记得人物、地点或大概发生过什么事。</p>
           <p><strong>怎么输入：</strong>像平时说话一样把画面或情节写出来，例如 <code>流萤带开拓者逛游乐园</code>、<code>星期日和知更鸟在剧场争论</code>。</p>
@@ -522,7 +522,7 @@ export default function App() {
           <p><strong>适用场景：</strong>大致记得某句台词怎么说，但记混了个别字、中间漏了字或有错别字，用「精准关键词」搜不到时。</p>
           <p><strong>怎么输入：</strong>至少输入 3 个字，例如把“生命因何而沉睡”记成 <code>生命因啥而沉睡</code> 也能找回原剧情。</p>
         </section>
-        <p className="mode-help-summary">日常使用建议：默认推荐「描述找剧情」，配置好「🔑 语义密钥」后描述你记得的情节；记得原话或人名时可切换到免密钥的「精准关键词」；记错字时切换「错字容错」。</p>
+        <p className="mode-help-summary">默认使用免密钥的「精准关键词」。日常使用建议：推荐「描述找剧情」，配置好「🔑 语义密钥」后描述你记得的情节；记得原话或人名时可切换到免密钥的「精准关键词」；记错字时切换「错字容错」。</p>
       </div>
     </Modal>}
     {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} initialEndpoint={visitorEndpoint} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('', '')} /></Modal>}
