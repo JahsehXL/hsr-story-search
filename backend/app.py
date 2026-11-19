@@ -26,6 +26,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .cloudflare_access import AccessDenied, AccessVerifier
 from .embeddings import EmbeddingError, embed
+from .feedback import FeedbackFullError, FeedbackRateLimitError, MAX_ATTACHMENT_BYTES
 from .runtime import Runtime, db_connect
 from .settings import atomic_json
 
@@ -75,7 +76,11 @@ class TrustedClientAddressMiddleware:
                 trusted = False
             if trusted:
                 headers = dict(scope.get("headers", []))
-                for forwarded in (headers.get(b"x-real-ip", b""), headers.get(b"x-forwarded-for", b"").split(b",")[0]):
+                for forwarded in (
+                    headers.get(b"cf-connecting-ip", b""),
+                    headers.get(b"x-real-ip", b""),
+                    headers.get(b"x-forwarded-for", b"").split(b",")[0],
+                ):
                     try:
                         host = str(ipaddress.ip_address(forwarded.decode("latin1").strip()))
                         break
@@ -234,7 +239,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                 return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)
             route = request.url.path
             public_routes = {"/api/v1/status", "/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/bootstrap", "/api/v1/auth/logout"}
-            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/search"} or route.startswith("/api/v1/missions/"))
+            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/search", "/api/v1/feedback"} or route.startswith("/api/v1/missions/"))
             if route not in public_routes and not public_query:
                 current_session = session(request)
                 if not current_session:
@@ -243,7 +248,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                     return JSONResponse({"detail": "此操作需要管理员登录"}, status_code=403)
             if route == "/api/v1/admin/upload":
                 maximum = 4 * 1024**3 + 1024**2
-            elif route.startswith("/api/v1/admin/upload/"):
+            elif route == "/api/v1/feedback" or route.startswith("/api/v1/admin/upload/"):
                 maximum = 8 * 1024**2
             else:
                 maximum = 1024**2
@@ -279,6 +284,14 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.exception_handler(FeedbackRateLimitError)
+    async def feedback_rate_error(request, exc):
+        return JSONResponse({"detail": str(exc)[:800]}, status_code=429, headers={"Retry-After": "60"})
+
+    @app.exception_handler(FeedbackFullError)
+    async def feedback_full_error(request, exc):
+        return JSONResponse({"detail": str(exc)[:800]}, status_code=507)
+
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
         return JSONResponse({"detail": str(exc)[:800]}, status_code=400)
@@ -297,7 +310,9 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         if not value and not public_readonly:
             return {"mode": mode, "public_readonly": False, "authenticated": False, "admin": False, "data": {"ready": False, "stats": {}, "snapshot": ""}, "embedding": {"ready": False, "index_ready": False, "server_key_ready": False, "compatible": False, "model": "", "dimension": 0, "indexed": 0, "total": 0}, "jobs": [], "version": VERSION}
         admin = bool(value and value["admin"])
-        return {"mode": mode, "public_readonly": public_readonly, "authenticated": True, "admin": admin, "data": runtime.status_data(), "embedding": runtime.embedding_status(), "jobs": runtime.public_jobs() if admin else [], "version": VERSION}
+        fb_summary = runtime.feedback.storage_summary()
+        fb_public = fb_summary if admin else {"full": fb_summary["full"], "max_attachment_bytes": fb_summary["max_attachment_bytes"], "max_per_hour": fb_summary["max_per_hour"]}
+        return {"mode": mode, "public_readonly": public_readonly, "authenticated": True, "admin": admin, "data": runtime.status_data(), "embedding": runtime.embedding_status(), "feedback": fb_public, "jobs": runtime.public_jobs() if admin else [], "version": VERSION}
 
     @app.post("/api/v1/auth/bootstrap")
     def bootstrap(payload: Bootstrap, request: Request, response: Response):
@@ -438,6 +453,77 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         result["snapshot"] = snapshot
         return result
 
+    @app.post("/api/v1/feedback")
+    async def submit_feedback(request: Request, user=Depends(reader)):
+        client_ip = getattr(request.state, "client_ip", request.client.host if request.client else "unknown")
+        content_type = (request.headers.get("content-type") or "").lower()
+        attachments: list[tuple[str, bytes]] = []
+        if content_type.startswith("multipart/form-data"):
+            form = await request.form()
+            category = str(form.get("category") or "other")
+            content = str(form.get("content") or "")
+            raw_ctx = form.get("context")
+            context = json.loads(str(raw_ctx)) if raw_ctx else {}
+            total_bytes = 0
+            for item in form.getlist("files"):
+                if hasattr(item, "read"):
+                    data = await item.read(MAX_ATTACHMENT_BYTES + 1)
+                    if not data:
+                        continue
+                    total_bytes += len(data)
+                    if total_bytes > MAX_ATTACHMENT_BYTES:
+                        raise ValueError("图片附件总大小不能超过 5 MB")
+                    attachments.append((getattr(item, "filename", "image") or "image", data))
+        else:
+            import base64
+            import binascii
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("请求格式无效")
+            category = str(payload.get("category") or "other")
+            content = str(payload.get("content") or "")
+            context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+            raw_files = payload.get("attachments") or []
+            if not isinstance(raw_files, list):
+                raise ValueError("附件列表格式无效")
+            total_bytes = 0
+            for entry in raw_files:
+                if not isinstance(entry, dict):
+                    raise ValueError("附件格式无效")
+                encoded = str(entry.get("data") or "").split(",", 1)[-1]
+                try:
+                    data = base64.b64decode(encoded, validate=True)
+                except binascii.Error:
+                    raise ValueError("图片编码格式无效") from None
+                total_bytes += len(data)
+                if total_bytes > MAX_ATTACHMENT_BYTES:
+                    raise ValueError("图片附件总大小不能超过 5 MB")
+                attachments.append((str(entry.get("filename") or "image"), data))
+        return await run_in_threadpool(
+            runtime.feedback.submit, client_ip, category, content, context, attachments
+        )
+
+    @app.get("/api/v1/admin/feedback")
+    def list_feedback(status: str = "all", category: str = "all", limit: int = 100, offset: int = 0, user=Depends(administrator)):
+        return runtime.feedback.list_items(status=status, category=category, limit=limit, offset=offset)
+
+    @app.post("/api/v1/admin/feedback/clear-resolved")
+    def clear_resolved_feedback(user=Depends(administrator)):
+        return runtime.feedback.clear_resolved()
+
+    @app.post("/api/v1/admin/feedback/{feedback_id}/status")
+    def update_feedback_status(feedback_id: str, payload: dict, user=Depends(administrator)):
+        return runtime.feedback.update_status(feedback_id, str(payload.get("status") or ""))
+
+    @app.post("/api/v1/admin/feedback/{feedback_id}/delete")
+    def delete_feedback_item(feedback_id: str, user=Depends(administrator)):
+        return runtime.feedback.delete_item(feedback_id)
+
+    @app.get("/api/v1/admin/feedback/{feedback_id}/attachments/{attachment_id}")
+    def get_feedback_attachment(feedback_id: str, attachment_id: str, user=Depends(administrator)):
+        path, mime_type, filename = runtime.feedback.get_attachment(feedback_id, attachment_id)
+        return FileResponse(path, media_type=mime_type, filename=filename, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
     @app.get("/api/v1/admin/settings")
     def settings(user=Depends(administrator)):
         return runtime.settings.public()
@@ -445,6 +531,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
     @app.get("/api/v1/admin/overview")
     def admin_overview(user=Depends(administrator)):
         return {"version": VERSION, "data": runtime.status_data(), "embedding": runtime.embedding_status(),
+                "feedback": runtime.feedback.storage_summary(),
                 "jobs": runtime.public_jobs(), "candidates": runtime.public_candidates(),
                 "updates": runtime.settings.public()["updates"]}
 

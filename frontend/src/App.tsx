@@ -5,7 +5,7 @@ import { createSemanticSearchClient, indexReady, loadVisitorEndpoint, loadVisito
 import type { SemanticContext } from './semantic';
 import Reader from './Reader';
 import { cleanMissionName, displayText, speakerName, errorText, missionTypeClass, versionText, Highlight, Empty } from './presentation';
-import type { Bookmark, Catalog, DialogueLine, Filters, MissionResponse, Result, SearchMode, SearchResponse, Status } from './types';
+import type { Bookmark, Catalog, DialogueLine, FeedbackContext, Filters, MissionResponse, Result, SearchMode, SearchResponse, Status } from './types';
 
 const Admin = lazy(() => import('./Admin'));
 
@@ -202,6 +202,217 @@ function VisitorKeyForm({ initialKey, initialEndpoint, model, save, clear }: { i
   </form>;
 }
 
+const feedbackCategories = [
+  { id: 'missing', label: '剧情或台词遗漏' },
+  { id: 'display', label: '显示或分支顺序错误' },
+  { id: 'feature', label: '功能建议' },
+  { id: 'other', label: '随便聊聊 / 其他' },
+] as const;
+
+const MAX_FEEDBACK_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_FEEDBACK_FILES = 5;
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function FeedbackModal({
+  full,
+  context,
+  onSuccess,
+  onClose,
+}: {
+  full: boolean;
+  context: FeedbackContext | null;
+  onSuccess: () => void;
+  onClose: () => void;
+}) {
+  const [category, setCategory] = useState<string>('missing');
+  const [content, setContent] = useState('');
+  const [includeContext, setIncludeContext] = useState(Boolean(context));
+  const [files, setFiles] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [isFull, setIsFull] = useState(full);
+
+  useEffect(() => {
+    const urls = files.map(file => URL.createObjectURL(file));
+    setPreviews(urls);
+    return () => {
+      for (const url of urls) URL.revokeObjectURL(url);
+    };
+  }, [files]);
+
+  const totalBytes = files.reduce((sum, item) => sum + item.size, 0);
+
+  function addFiles(incoming: FileList | File[]) {
+    setError('');
+    const list = Array.from(incoming).filter(file => /^image\/(png|jpeg|webp|gif)$/i.test(file.type));
+    if (!list.length) {
+      setError('请选择 PNG、JPG、WebP 或 GIF 格式的图片');
+      return;
+    }
+    const next = [...files, ...list];
+    if (next.length > MAX_FEEDBACK_FILES) {
+      setError(`单次最多附带 ${MAX_FEEDBACK_FILES} 张图片`);
+      return;
+    }
+    const nextBytes = next.reduce((sum, item) => sum + item.size, 0);
+    if (nextBytes > MAX_FEEDBACK_ATTACHMENT_BYTES) {
+      setError(`图片附件总大小不能超过 5 MB（当前已选 ${formatBytes(nextBytes)}）`);
+      return;
+    }
+    setFiles(next);
+  }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (submitting || isFull) return;
+    const trimmed = content.trim();
+    if (!trimmed) {
+      setError('请输入反馈内容');
+      return;
+    }
+    if (totalBytes > MAX_FEEDBACK_ATTACHMENT_BYTES) {
+      setError('图片附件总大小不能超过 5 MB');
+      return;
+    }
+    setSubmitting(true);
+    setError('');
+    try {
+      const form = new FormData();
+      form.append('category', category);
+      form.append('content', trimmed);
+      if (includeContext && context) {
+        form.append('context', JSON.stringify(context));
+      }
+      for (const file of files) {
+        form.append('files', file, file.name || 'image.png');
+      }
+      await request('feedback', { method: 'POST', body: form });
+      onSuccess();
+    } catch (failure) {
+      const msg = errorText(failure);
+      if (msg.includes('存储空间已满') || msg.includes('反馈已满')) setIsFull(true);
+      setError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return <form
+    className="feedback-form"
+    onSubmit={e => void handleSubmit(e)}
+    onPaste={e => {
+      const pasted: File[] = [];
+      for (const item of Array.from(e.clipboardData?.items || [])) {
+        if (item.type.startsWith('image/')) {
+          const f = item.getAsFile();
+          if (f) pasted.push(f);
+        }
+      }
+      if (pasted.length) {
+        e.preventDefault();
+        addFiles(pasted);
+      }
+    }}
+  >
+    {isFull && <div className="inline-alert feedback-full-alert" role="alert">
+      <strong>目前反馈存储空间已满</strong>
+      <p>请稍后再试，或前往 <a href="https://github.com/JahsehXL/hsr-story-search/issues" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> / <a href="https://jahsehxx.dpdns.org/blog/" target="_blank" rel="noreferrer">个人博客 ↗</a> 联系作者处理。</p>
+    </div>}
+    <p className="feedback-intro">发现剧情遗漏、顺序错乱，或者有任何建议与想说的话，都可以在这里直接发送。支持选择或直接粘贴截图（附件总大小不超过 5 MB，同一 IP 每小时最多提交 5 次）。</p>
+    <div className="field">
+      <span>反馈类型</span>
+      <div className="feedback-category-pills" role="radiogroup" aria-label="反馈类型">
+        {feedbackCategories.map(item => <button
+          key={item.id}
+          type="button"
+          className={`feedback-category-pill ${category === item.id ? 'is-selected' : ''}`}
+          aria-pressed={category === item.id}
+          onClick={() => setCategory(item.id)}
+          disabled={isFull || submitting}
+        >{item.label}</button>)}
+      </div>
+    </div>
+    <label className="field">
+      <span>反馈内容 <small>{content.length} / 4000</small></span>
+      <textarea
+        rows={5}
+        value={content}
+        onChange={e => setContent(e.target.value)}
+        placeholder="请描述遇到的问题、遗漏的剧情任务或想对作者说的话（可直接 Ctrl+V 粘贴截图）…"
+        maxLength={4000}
+        required
+        disabled={isFull || submitting}
+      />
+    </label>
+    {context && (context.mission_id || context.query) && <label className="feedback-context-toggle">
+      <input
+        type="checkbox"
+        checked={includeContext}
+        onChange={e => setIncludeContext(e.target.checked)}
+        disabled={isFull || submitting}
+      />
+      <div className="feedback-context-preview">
+        <strong>附带当前查看的剧情上下文</strong>
+        <span>
+          {[
+            context.mission_name ? `${context.mission_name}（${context.mission_id}）` : context.mission_id,
+            context.speaker && context.text ? `${speakerName(context.speaker)}：${displayText(context.text).slice(0, 48)}` : '',
+            context.query ? `搜索词：「${context.query}」` : '',
+          ].filter(Boolean).join(' · ')}
+        </span>
+      </div>
+    </label>}
+    <div className="field">
+      <span>附带图片（可选，最多 {MAX_FEEDBACK_FILES} 张，总大小 ≤ 5 MB） <small>已选 {formatBytes(totalBytes)} / 5.00 MB</small></span>
+      <div className="feedback-upload-row">
+        <label className={`file-input feedback-file-label ${isFull || submitting || files.length >= MAX_FEEDBACK_FILES ? 'disabled' : ''}`}>
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            disabled={isFull || submitting || files.length >= MAX_FEEDBACK_FILES}
+            onChange={e => {
+              if (e.target.files?.length) addFiles(e.target.files);
+              e.target.value = '';
+            }}
+          />
+          <span>+ 选择图片或直接粘贴截图（PNG / JPG / WebP / GIF）</span>
+        </label>
+      </div>
+      {files.length > 0 && <div className="feedback-attachment-list">
+        {files.map((file, idx) => <div className="feedback-attachment-chip" key={`${file.name}-${idx}`}>
+          {previews[idx] && <img src={previews[idx]} alt={file.name} />}
+          <div className="feedback-attachment-meta">
+            <span title={file.name}>{file.name}</span>
+            <small>{formatBytes(file.size)}</small>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={`移除 ${file.name}`}
+            onClick={() => setFiles(old => old.filter((_, i) => i !== idx))}
+            disabled={submitting}
+          >×</button>
+        </div>)}
+      </div>}
+    </div>
+    {error && !isFull && <p className="error-message" role="alert">{error}</p>}
+    <div className="form-actions">
+      <button className="primary" type="submit" disabled={isFull || submitting || !content.trim()}>
+        {submitting ? '正在发送…' : '提交反馈'}
+      </button>
+      <button className="secondary" type="button" onClick={onClose} disabled={submitting}>取消</button>
+    </div>
+  </form>;
+}
+
 export default function App() {
   const initial = useRef(readRoute());
   const [status, setStatus] = useState<Status | null>(null);
@@ -231,6 +442,7 @@ export default function App() {
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showVisitorKey, setShowVisitorKey] = useState(false);
   const [showModeHelp, setShowModeHelp] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [visitorKey, setVisitorKey] = useState(storedVisitorKey);
   const [visitorEndpoint, setVisitorEndpoint] = useState(storedVisitorEndpoint);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => { try { return JSON.parse(localStorage.getItem('hsr-bookmarks') || '[]'); } catch { return []; } });
@@ -496,6 +708,7 @@ export default function App() {
             </div>
           </div>
           <button type="button" className="text-button semantic-key-link" onClick={() => setShowVisitorKey(true)}>🔑 语义密钥{visitorKey && <span>已配置</span>}</button>
+          <button type="button" className="text-button feedback-open-link" onClick={() => setShowFeedback(true)}>💬 意见反馈</button>
         </div>
         <div className="search-options">
           <div className="filter-row">
@@ -562,6 +775,31 @@ export default function App() {
       </div>
     </Modal>}
     {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} initialEndpoint={visitorEndpoint} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('', '')} /></Modal>}
+    {showFeedback && <Modal title="意见反馈" close={() => setShowFeedback(false)}>
+      <FeedbackModal
+        full={Boolean(status.feedback?.full)}
+        context={(selected || searchedQuery) ? {
+          mission_id: detail?.mission?.id || selected?.mission_id || '',
+          mission_name: cleanMissionName(detail?.mission?.name || selected?.mission_name, detail?.mission?.chapter || selected?.chapter, detail?.mission?.world || selected?.world),
+          chapter: detail?.mission?.chapter || selected?.chapter || '',
+          world: detail?.mission?.world || selected?.world || '',
+          version: detail?.mission?.version || selected?.version || '',
+          line_id: detail?.anchor_line_id || selected?.line_id || '',
+          speaker: selected?.speaker || '',
+          text: selected?.display_text || selected?.text || '',
+          script: selected?.script || '',
+          branch: selected?.branch || '',
+          query: searchedQuery || query.trim(),
+          mode,
+        } : null}
+        onSuccess={() => {
+          setShowFeedback(false);
+          setToast('感谢你的反馈！已保存到服务器');
+          void refresh().catch(() => {});
+        }}
+        onClose={() => setShowFeedback(false)}
+      />
+    </Modal>}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}
     {showSettings && <Modal title="档案管理" close={() => setShowSettings(false)} wide><Suspense fallback={<p role="status">正在加载管理工具…</p>}><Admin status={status} onRefresh={() => refresh()} onToast={setToast} /></Suspense></Modal>}
     {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setSearchedQuery(bookmark.query); setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{displayText(bookmark.result.display_text || bookmark.result.text) || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}

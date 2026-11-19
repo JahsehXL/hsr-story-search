@@ -1,7 +1,22 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { apiUrl, downloadJson, post, request } from './api';
-import { errorText, Empty } from './presentation';
-import type { Job, Settings, Status } from './types';
+import { displayText, errorText, Empty, speakerName } from './presentation';
+import type { FeedbackItem, FeedbackListResponse, FeedbackStorage, Job, Settings, Status } from './types';
+
+const categoryLabels: Record<string, string> = {
+  missing: '剧情遗漏',
+  display: '显示 / 分支错误',
+  feature: '功能建议',
+  other: '其他反馈',
+};
+
+function formatStorageBytes(bytes: number | undefined) {
+  const n = Number(bytes || 0);
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(2)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
 
 const labels: Record<string, string> = {
   Main: '开拓任务', Branch: '冒险任务', Companion: '同行任务', Daily: '日常任务',
@@ -16,7 +31,7 @@ const labels: Record<string, string> = {
 function formatNumber(value: number | string | undefined) { return typeof value === 'number' ? value.toLocaleString('zh-CN') : value || '—'; }
 
 export default function Admin({ status, onRefresh, onToast }: { status: Status; onRefresh: () => Promise<Status>; onToast: (message: string) => void }) {
-  const [tab, setTab] = useState<'api' | 'data' | 'jobs'>('api');
+  const [tab, setTab] = useState<'api' | 'data' | 'jobs' | 'feedback'>('api');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [apiKey, setApiKey] = useState('');
   const [extra, setExtra] = useState('{}');
@@ -29,6 +44,18 @@ export default function Admin({ status, onRefresh, onToast }: { status: Status; 
   const [packageFile, setPackageFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [confirmIndex, setConfirmIndex] = useState(false);
+  const [feedbackStorage, setFeedbackStorage] = useState<FeedbackStorage | null>(null);
+  const [feedbackItems, setFeedbackItems] = useState<FeedbackItem[]>([]);
+  const [feedbackStatusFilter, setFeedbackStatusFilter] = useState('all');
+  const [feedbackCategoryFilter, setFeedbackCategoryFilter] = useState('all');
+
+  const loadFeedback = useCallback(async (st = feedbackStatusFilter, cat = feedbackCategoryFilter) => {
+    const q = new URLSearchParams({ status: st, category: cat, limit: '100' });
+    const data = await request<FeedbackListResponse>(`admin/feedback?${q}`);
+    setFeedbackStorage(data.storage);
+    setFeedbackItems(data.items || []);
+  }, [feedbackStatusFilter, feedbackCategoryFilter]);
+
   useEffect(() => {
     let alive = true;
     request<Settings>('admin/settings').then(data => { if (alive) { setSettings(data); setExtra(JSON.stringify(data.embedding.extra_body || {}, null, 2)); } }).catch(err => { if (alive) setError(errorText(err)); });
@@ -36,6 +63,12 @@ export default function Admin({ status, onRefresh, onToast }: { status: Status; 
     void poll(); const timer = setInterval(() => void poll(), 2500);
     return () => { alive = false; clearInterval(timer); };
   }, []);
+
+  useEffect(() => {
+    if (tab === 'feedback') {
+      void loadFeedback().catch(err => setError(errorText(err)));
+    }
+  }, [tab, loadFeedback]);
 
   async function action(name: string, run: () => Promise<unknown>) {
     setBusy(name); setError('');
@@ -78,7 +111,8 @@ export default function Admin({ status, onRefresh, onToast }: { status: Status; 
   }
   function updateEmbedding(key: string, value: unknown) { setSettings(old => old ? { ...old, embedding: { ...old.embedding, [key]: value } } : old); }
   const running = jobs.some(job => ['queued', 'running', 'paused'].includes(job.status));
-  return <div className="admin-shell"><nav className="admin-tabs" aria-label="管理分类">{([['api', '搜索 API'], ['data', '数据与更新'], ['jobs', '后台任务']] as const).map(([id, label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'jobs' && running && <span className="status-dot" />}</button>)}</nav>
+  const pendingFeedback = feedbackStorage?.pending_count ?? status.feedback?.pending_count ?? 0;
+  return <div className="admin-shell"><nav className="admin-tabs" aria-label="管理分类">{([['api', '搜索 API'], ['data', '数据与更新'], ['jobs', '后台任务'], ['feedback', '用户反馈']] as const).map(([id, label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'jobs' && running && <span className="status-dot" />}{id === 'feedback' && pendingFeedback > 0 && <span className="status-dot" />}</button>)}</nav>
     <div className="admin-content">{error && <div className="inline-alert" role="alert">{error}</div>}
       {tab === 'api' && (settings ? <>
         <div className="section-heading"><div><h3>嵌入模型接口</h3><p>用于理解情节描述，剧情索引与查询应使用配套模型。</p></div><span className={`state-pill ${status.embedding.ready && status.embedding.compatible ? 'ready' : ''}`}>{status.embedding.ready && status.embedding.compatible ? '索引可用' : '待建立索引'}</span></div>
@@ -128,6 +162,83 @@ export default function Admin({ status, onRefresh, onToast }: { status: Status; 
         <section className="admin-section"><h3>恢复与诊断</h3><div className="form-actions"><button className="secondary" disabled={!!busy || running} onClick={() => { if (window.confirm('将活动数据恢复到上一份已保留快照，确认继续？')) void action('rollback', () => startJob('rollback')); }}>恢复上一份快照</button><button className="text-button" disabled={!!busy} onClick={() => void action('diagnostics', async () => downloadJson('星轨档案-诊断.json', await request('admin/diagnostics')))}>导出诊断信息 ↗</button></div></section>
       </>}
       {tab === 'jobs' && <><div className="section-heading"><div><h3>后台任务</h3><p>任务状态自动刷新，切换页面后仍可继续处理。</p></div></div>{jobs.length ? <div className="job-list">{jobs.map(job => <article key={job.id} className="job-card"><div className="job-title"><h4>{labels[job.kind] || job.kind}</h4><span className={`job-state state-${job.status}`}>{labels[job.status] || job.status}</span></div><p>{job.message || job.phase || '等待处理'}</p>{job.total > 0 && <><progress value={job.done || 0} max={job.total} /><div className="progress-caption"><span>{formatNumber(job.done)} / {formatNumber(job.total)}</span><span>{Math.min(100, Math.round(job.done / job.total * 100))}%</span></div></>}{job.error && <div className="error-message">{job.error}</div>}<div className="job-footer"><time>{job.created_at ? new Date(job.created_at).toLocaleString('zh-CN') : ''}</time><div>{job.status === 'running' && <button className="text-button" disabled={!!busy} onClick={() => void action(job.id, async () => { await post(`admin/jobs/${job.id}/pause`); })}>暂停</button>}{['paused', 'failed', 'interrupted', 'cancelled'].includes(job.status) && <button className="text-button" disabled={!!busy} onClick={() => void action(job.id, async () => { await post(`admin/jobs/${job.id}/resume`); })}>继续</button>}{['queued', 'running', 'paused'].includes(job.status) && <button className="text-button danger-text" disabled={!!busy} onClick={() => void action(job.id, async () => { await post(`admin/jobs/${job.id}/cancel`); })}>取消</button>}</div></div></article>)}</div> : <Empty title="暂无后台任务"><p>导入数据或建立索引后，可以在这里查看进度。</p></Empty>}</>}
+      {tab === 'feedback' && <>
+        <div className="section-heading">
+          <div>
+            <h3>用户反馈与存储空间</h3>
+            <p>已用 {formatStorageBytes(feedbackStorage?.used_bytes)} / {formatStorageBytes(feedbackStorage?.max_bytes || 1073741824)}（{(feedbackStorage?.used_percent ?? 0).toFixed(2)}%），上限 1 GB。</p>
+          </div>
+          <div className="form-actions" style={{ marginTop: 0 }}>
+            <button type="button" className="secondary" disabled={!!busy} onClick={() => void action('fb-refresh', () => loadFeedback())}>刷新</button>
+            {Boolean(feedbackStorage?.resolved_count) && <button type="button" className="secondary danger-text" disabled={!!busy} onClick={() => {
+              if (window.confirm(`确认清理全部 ${feedbackStorage?.resolved_count} 条已处理反馈并释放磁盘空间？`)) {
+                void action('fb-clear', async () => {
+                  const res = await post<{ deleted: number }>('admin/feedback/clear-resolved');
+                  await loadFeedback();
+                  onToast(`已清理 ${res.deleted} 条已处理反馈`);
+                });
+              }
+            }}>一键清理已处理（{feedbackStorage?.resolved_count}）</button>}
+          </div>
+        </div>
+        {feedbackStorage && <>
+          <progress value={feedbackStorage.used_bytes} max={feedbackStorage.max_bytes} />
+          <div className="data-stats" style={{ marginTop: 12, marginBottom: 16 }}>
+            <div><strong>{formatNumber(feedbackStorage.pending_count)}</strong><span>待处理</span></div>
+            <div><strong>{formatNumber(feedbackStorage.resolved_count)}</strong><span>已处理</span></div>
+            <div><strong>{formatStorageBytes(feedbackStorage.used_bytes)}</strong><span>占用空间（共 {formatNumber(feedbackStorage.attachment_count)} 张附图）</span></div>
+          </div>
+        </>}
+        <div className="form-grid" style={{ marginBottom: 14 }}>
+          <label className="field"><span>状态筛选</span><select value={feedbackStatusFilter} onChange={e => setFeedbackStatusFilter(e.target.value)}><option value="all">全部状态</option><option value="pending">待处理</option><option value="resolved">已处理</option></select></label>
+          <label className="field"><span>分类筛选</span><select value={feedbackCategoryFilter} onChange={e => setFeedbackCategoryFilter(e.target.value)}><option value="all">全部分类</option><option value="missing">剧情遗漏</option><option value="display">显示 / 分支错误</option><option value="feature">功能建议</option><option value="other">其他反馈</option></select></label>
+        </div>
+        {feedbackItems.length ? <div className="job-list">
+          {feedbackItems.map(item => <article key={item.id} className="job-card feedback-admin-card">
+            <div className="job-title">
+              <h4>{categoryLabels[item.category] || item.category}</h4>
+              <span className={`job-state ${item.status === 'resolved' ? 'state-completed' : 'state-running'}`}>{item.status === 'resolved' ? '已处理' : '待处理'}</span>
+            </div>
+            <p className="feedback-admin-content">{item.content}</p>
+            {item.context && (item.context.mission_id || item.context.query) && <div className="feedback-admin-context">
+              <span>关联上下文：{[
+                item.context.mission_name ? `${item.context.mission_name}（${item.context.mission_id}）` : item.context.mission_id,
+                item.context.speaker && item.context.text ? `${speakerName(item.context.speaker)}：${displayText(item.context.text).slice(0, 60)}` : '',
+                item.context.query ? `搜索词：「${item.context.query}」` : '',
+              ].filter(Boolean).join(' · ')}</span>
+              {item.context.mission_id && <a href={`#/?mission=${encodeURIComponent(item.context.mission_id)}${item.context.line_id ? `&line=${encodeURIComponent(item.context.line_id)}` : ''}${item.context.script ? `&script=${encodeURIComponent(item.context.script)}` : ''}`}>定位剧情 ↗</a>}
+            </div>}
+            {item.attachments.length > 0 && <div className="feedback-admin-images">
+              {item.attachments.map(att => {
+                const url = apiUrl(`admin/feedback/${encodeURIComponent(item.id)}/attachments/${encodeURIComponent(att.id)}`);
+                return <a key={att.id} href={url} target="_blank" rel="noreferrer" className="feedback-admin-thumb" title={`${att.filename} (${formatStorageBytes(att.size_bytes)})`}>
+                  <img src={url} alt={att.filename} loading="lazy" />
+                  <small>{att.filename} · {formatStorageBytes(att.size_bytes)}</small>
+                </a>;
+              })}
+            </div>}
+            <div className="job-footer">
+              <time>{new Date(item.created_at).toLocaleString('zh-CN')} · IP {item.ip_masked} · {formatStorageBytes(item.size_bytes)}</time>
+              <div>
+                <button type="button" className="text-button" disabled={!!busy} onClick={() => void action(`fb-st-${item.id}`, async () => {
+                  const next = item.status === 'resolved' ? 'pending' : 'resolved';
+                  await post(`admin/feedback/${item.id}/status`, { status: next });
+                  await loadFeedback();
+                })}>{item.status === 'resolved' ? '标为待处理' : '标记已处理'}</button>
+                <button type="button" className="text-button danger-text" disabled={!!busy} onClick={() => {
+                  if (window.confirm('确认删除这条反馈及所附图片并释放空间？')) {
+                    void action(`fb-del-${item.id}`, async () => {
+                      await post(`admin/feedback/${item.id}/delete`);
+                      await loadFeedback();
+                      onToast('反馈已删除并释放存储空间');
+                    });
+                  }
+                }}>删除</button>
+              </div>
+            </div>
+          </article>)}
+        </div> : <Empty title="暂无反馈记录"><p>用户提交的反馈与截图会显示在这里。</p></Empty>}
+      </>}
     </div>
   </div>;
 }
