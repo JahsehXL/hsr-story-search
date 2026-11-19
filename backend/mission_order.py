@@ -18,8 +18,11 @@ LEVEL_GROUP_PATTERN = re.compile(
 )
 GROUP_GRAPH_PATTERN = re.compile(r"Config/Level/GroupGraph/F(\d+)/Group_F\1_G(\d+)\.json$")
 MISSION_INFO_PATTERN = re.compile(r"Config/Level/Mission/(\d+)/MissionInfo_\1(?:\.partial)?\.json$")
+STAGE_BG_TALK_PATTERN = re.compile(r"Config/Level/SubLevelGraph/StageBgTalk_(\d+)\.json$")
+BATTLE_PERFORM_PATTERN = re.compile(r"Story/BattlePerformance/(\d+)/BattlePerform[^/]+\.json$")
+TALK_SENTENCE_SIGNAL = re.compile(r"TalkSentence_(\d+)")
 PERFORMANCE_FILE_PID = re.compile(r"(?:Act|DS|Story)(\d{9})\.json$")
-NESTED_GRAPH_KEYS = ("DialoguePath", "LevelGraph", "TaskListTemplatePath", "InitLevelGraph", "JsonPath")
+NESTED_GRAPH_KEYS = ("DialoguePath", "LevelGraph", "TaskListTemplatePath", "InitLevelGraph", "JsonPath", "BattlePerformPath")
 
 
 def ensure_script_order_schema(conn: sqlite3.Connection) -> None:
@@ -157,11 +160,19 @@ class _SourceReader:
             plen = len(self._prefix)
             for full in self._zip_names:
                 rel = full[plen:] if self._prefix and full.startswith(self._prefix) else full
-                if rel.endswith(".json") and (rel.startswith("Config/Level/") or rel.startswith("Config/LevelOutput/")):
+                if rel.endswith(".json") and (
+                    rel.startswith(("Config/Level/", "Config/LevelOutput/", "Story/BattlePerformance/"))
+                ):
                     yield rel
             return
         assert self._dir_root is not None
-        for sub in ("Config/Level/Mission", "Config/Level/GroupGraph", "Config/LevelOutput"):
+        for sub in (
+            "Config/Level/Mission",
+            "Config/Level/GroupGraph",
+            "Config/Level/SubLevelGraph",
+            "Config/LevelOutput",
+            "Story/BattlePerformance",
+        ):
             base = self._dir_root / sub
             if not base.is_dir():
                 continue
@@ -176,12 +187,22 @@ class _MissionOrderBuilder:
         self.perf_map: dict[tuple[str, str], str] = {}
         self.pid_to_paths: dict[str, set[str]] = defaultdict(set)
         self.raid_to_mids: dict[int, list[str]] = defaultdict(list)
+        self.mission_chapters: dict[str, int] = {}
+        self.stage_graphs: dict[int, list[str]] = defaultdict(list)
         self.lg_index: dict[tuple[int, int], list[str]] = defaultdict(list)
         self.gg_index: dict[tuple[int, int], str] = {}
         self.mission_infos: dict[str, dict] = {}
         self._load_indexes()
 
     def _load_indexes(self) -> None:
+        for row in _read_records(self.reader.read_json("ExcelOutput/MainMission.json")):
+            if not isinstance(row, dict):
+                continue
+            mid_val = row.get("MainMissionID")
+            cid = _extract_int(row.get("ChapterID"))
+            if mid_val is not None and cid:
+                self.mission_chapters[str(mid_val)] = cid
+
         for ptype in VALID_PERF_TYPES:
             for row in _read_records(self.reader.read_json(f"ExcelOutput/Performance{ptype}.json")):
                 if not isinstance(row, dict):
@@ -211,8 +232,14 @@ class _MissionOrderBuilder:
                 self.gg_index[(int(match[1]), int(match[2]))] = rel
             elif match := MISSION_INFO_PATTERN.fullmatch(rel):
                 mission_info_files[match[1]].append(rel)
+            elif match := STAGE_BG_TALK_PATTERN.fullmatch(rel):
+                self.stage_graphs[int(match[1])].append(rel)
+            elif match := BATTLE_PERFORM_PATTERN.fullmatch(rel):
+                self.stage_graphs[int(match[1])].append(rel)
 
         for rels in self.lg_index.values():
+            rels.sort()
+        for rels in self.stage_graphs.values():
             rels.sort()
 
         for mid, rels in mission_info_files.items():
@@ -506,10 +533,15 @@ class _MissionOrderBuilder:
                         sid_int = _extract_int(item.get("TalkSentenceID"))
                         if sid_int:
                             events.append(("sid", str(sid_int)))
-            elif node_type == "PlayNPCSingleBubbleTalk":
+            elif node_type == "PlayNPCSingleBubbleTalk" or node_type == "PlayMultiVoiceTalk":
                 sid_int = _extract_int(node.get("TalkSentenceID"))
                 if sid_int:
                     events.append(("sid", str(sid_int)))
+            elif node_type == "PerformanceTransition":
+                if node.get("TextEnabled", True):
+                    sid_int = _extract_int(node.get("TalkSentenceID"))
+                    if sid_int:
+                        events.append(("sid", str(sid_int)))
             elif node_type == "PlayVoice_Sequence":
                 for vid in node.get("VoiceIDs") or ():
                     vid_int = _extract_int(vid)
@@ -519,15 +551,18 @@ class _MissionOrderBuilder:
                 vid_int = _extract_int(node.get("VoiceID"))
                 if vid_int:
                     events.append(("sid", str(vid_int)))
-            elif node_type == "WaitCustomString":
+            elif node_type in ("WaitCustomString", "TriggerCustomString"):
                 cs = node.get("CustomString")
                 val = cs.get("Value") if isinstance(cs, dict) else None
                 if val and isinstance(val, str):
-                    talk_rel = f"Config/Level/Mission/{mid}/Talk/{val}.json"
-                    if self.reader.exists(talk_rel):
-                        self._collect_events_from_graph(
-                            talk_rel, mid, active_sm, must_finished, may_finished, mission_sm_ids, events, visited_graphs
-                        )
+                    if match := TALK_SENTENCE_SIGNAL.search(val):
+                        events.append(("sid", match[1]))
+                    if node_type == "WaitCustomString":
+                        talk_rel = f"Config/Level/Mission/{mid}/Talk/{val}.json"
+                        if self.reader.exists(talk_rel):
+                            self._collect_events_from_graph(
+                                talk_rel, mid, active_sm, must_finished, may_finished, mission_sm_ids, events, visited_graphs
+                            )
 
             for key in NESTED_GRAPH_KEYS:
                 nested = node.get(key)
@@ -645,10 +680,27 @@ class _MissionOrderBuilder:
                         for rmid in self.raid_to_mids.get(param_int // 1000, ()):
                             events.extend(self._collect_mission_events(rmid, visited_mids))
             walk_pairs(unique_pairs, smid)
+            if sm.get("FinishType") in ("StageWin", "BattleWinWithCustomValue"):
+                stage_id = _extract_int(sm.get("ParamInt1"))
+                if stage_id:
+                    for stage_rel in self.stage_graphs.get(stage_id, ()):
+                        emit_graph(stage_rel, smid)
             if mj and mj_waits_talk:
                 emit_graph(mj, smid)
             walk_pairs(shared_pairs, smid)
         return events
+
+    def _is_sibling(self, mid: str, src_mid: str) -> bool:
+        if mid == src_mid:
+            return True
+        chap = self.mission_chapters.get(mid)
+        if chap and chap == self.mission_chapters.get(src_mid):
+            return True
+        return len(mid) >= 5 and len(src_mid) >= 5 and mid[:5] == src_mid[:5]
+
+    @staticmethod
+    def _mid_sort_val(mid: str) -> tuple[int, str]:
+        return (int(mid), mid) if mid.isdigit() else (0, mid)
 
     def compute(self, conn: sqlite3.Connection) -> tuple[dict[str, dict[str, float]], int, int]:
         mission_scripts: dict[str, list[str]] = defaultdict(list)
@@ -662,14 +714,13 @@ class _MissionOrderBuilder:
         ):
             mission_scripts[mid].append(script)
 
-        total_missions = len(mission_scripts)
-        total_scripts = sum(len(items) for items in mission_scripts.values())
-        orders: dict[str, dict[str, float]] = {}
+        own_maps: dict[str, tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]] = {}
+        global_path_hits: dict[str, list[tuple[str, int]]] = defaultdict(list)
+        global_pid_hits: dict[str, list[tuple[str, int]]] = defaultdict(list)
+        global_sid_hits: dict[str, list[tuple[str, int]]] = defaultdict(list)
 
-        for mid, scripts in mission_scripts.items():
-            if mid not in self.mission_infos:
-                continue
-            events = self._collect_mission_events(mid)
+        for src_mid in sorted(self.mission_infos):
+            events = self._collect_mission_events(src_mid)
             if not events:
                 continue
             path_rank: dict[str, int] = {}
@@ -678,37 +729,71 @@ class _MissionOrderBuilder:
             p7_rank: dict[str, int] = {}
             for idx, (kind, val) in enumerate(events, 1):
                 if kind == "perf_path":
-                    path_rank.setdefault(val, idx)
+                    if val not in path_rank:
+                        path_rank[val] = idx
+                        global_path_hits[val].append((src_mid, idx))
                 elif kind == "perf_id":
-                    pid_rank.setdefault(val, idx)
+                    if val not in pid_rank:
+                        pid_rank[val] = idx
+                        global_pid_hits[val].append((src_mid, idx))
                 elif kind == "sid":
-                    sid_rank.setdefault(val, idx)
-                    if len(val) == 9 and val.isdigit():
+                    if val not in sid_rank:
+                        sid_rank[val] = idx
+                        if not val.startswith("1000000"):
+                            global_sid_hits[val].append((src_mid, idx))
+                    if len(val) == 9 and val.isdigit() and not val.startswith("1000000"):
                         p7_rank.setdefault(val[:7], idx)
+            own_maps[src_mid] = (path_rank, pid_rank, sid_rank, p7_rank)
 
-            script_ranks: dict[str, float] = {}
+        total_missions = len(mission_scripts)
+        total_scripts = sum(len(items) for items in mission_scripts.values())
+        orders: dict[str, dict[str, float]] = {}
+
+        for mid, scripts in mission_scripts.items():
+            raw_ranks: dict[str, tuple[int, tuple[int, str], int]] = {}
+            own = own_maps.get(mid)
+            mid_key = self._mid_sort_val(mid)
+
             for sc in scripts:
                 base_sc = sc.split("::timeline-")[0]
-                rank = path_rank.get(base_sc)
-                if rank is None:
-                    if match := PERFORMANCE_FILE_PID.search(base_sc):
-                        rank = pid_rank.get(match[1])
-                if rank is None:
-                    sid_hits = [sid_rank[s] for s in script_sids[(mid, sc)] if s in sid_rank]
-                    if sid_hits:
-                        rank = min(sid_hits)
-                if rank is None:
-                    p7_hits = [
-                        p7_rank[s[:7]]
-                        for s in script_sids[(mid, sc)]
-                        if len(s) == 9 and s.isdigit() and s[:7] in p7_rank
-                    ]
-                    if p7_hits:
-                        rank = min(p7_hits)
-                if rank is not None:
-                    script_ranks[sc] = float(rank)
-            if script_ranks:
-                orders[mid] = script_ranks
+                file_pid_match = PERFORMANCE_FILE_PID.search(base_sc)
+                file_pid = file_pid_match[1] if file_pid_match else ""
+                sids = script_sids[(mid, sc)]
+
+                own_rank: int | None = None
+                if own is not None:
+                    path_rank, pid_rank, sid_rank, p7_rank = own
+                    own_rank = path_rank.get(base_sc)
+                    if own_rank is None and file_pid:
+                        own_rank = pid_rank.get(file_pid)
+                    if own_rank is None:
+                        hits = [sid_rank[s] for s in sids if s in sid_rank]
+                        if hits:
+                            own_rank = min(hits)
+                    if own_rank is None:
+                        p7_hits = [p7_rank[s[:7]] for s in sids if len(s) == 9 and s.isdigit() and s[:7] in p7_rank]
+                        if p7_hits:
+                            own_rank = min(p7_hits)
+
+                if own_rank is not None:
+                    raw_ranks[sc] = (0, (0, ""), own_rank)
+                    continue
+
+                sibling_cands = [item for item in global_path_hits.get(base_sc, ()) if self._is_sibling(mid, item[0])]
+                if not sibling_cands and file_pid:
+                    sibling_cands = [item for item in global_pid_hits.get(file_pid, ()) if self._is_sibling(mid, item[0])]
+                if not sibling_cands:
+                    for s in sids:
+                        if s in global_sid_hits:
+                            sibling_cands.extend(item for item in global_sid_hits[s] if self._is_sibling(mid, item[0]))
+                if sibling_cands:
+                    best_src, best_rank = min(sibling_cands, key=lambda item: (self._mid_sort_val(item[0]), item[1]))
+                    tier = -1 if self._mid_sort_val(best_src) < mid_key else 1
+                    raw_ranks[sc] = (tier, self._mid_sort_val(best_src), best_rank)
+
+            if raw_ranks:
+                ordered = sorted(raw_ranks.items(), key=lambda item: (item[1], item[0]))
+                orders[mid] = {sc: float(index) for index, (sc, _) in enumerate(ordered, 1)}
         return orders, total_missions, total_scripts
 
 

@@ -607,10 +607,25 @@ class DataTests(unittest.TestCase):
         self.assertIn("Config/Level/Mission/2022005/Act/Act202200506.json::timeline-2220506", contest["ordered_scripts"])
 
     def test_mission_dag_raid_zip_and_roundtrip(self):
-        self.add_mission_with_sentences(1054706, [(157060101, "幻月内关卡"), (157060901, "回到外层任务")])
-        s01, s09 = "Story/Discussion/Mission/1054706/DS105470601.json", "Story/Discussion/Mission/1054706/DS105470609.json"
+        self.add_mission_with_sentences(1054706, [
+            (157060101, "幻月内关卡"),
+            (157060501, "战斗内冒泡提示"),
+            (157060901, "回到外层任务"),
+            (157061201, "同章相邻任务触发"),
+        ])
+        self.add_mission_with_sentences(1054801, [])
+        missions = json.loads((self.root / "ExcelOutput/MainMission.json").read_text(encoding="utf-8"))
+        for entry in missions:
+            if entry["MainMissionID"] in (1054706, 1054801):
+                entry["ChapterID"] = 105010
+        self.write("ExcelOutput/MainMission.json", missions)
+        s01 = "Story/Discussion/Mission/1054706/DS105470601.json"
+        s05 = "Recovered/Mission/1054706/1570605.json"
+        s09 = "Story/Discussion/Mission/1054706/DS105470609.json"
+        s12 = "Story/Discussion/Mission/1054706/DS105470612.json"
         self.simple_perf(s01, [157060101])
         self.simple_perf(s09, [157060901])
+        self.simple_perf(s12, [157061201])
 
         base_db, clone_db = Path(self.temp.name) / "no-info.db", Path(self.temp.name) / "clone.db"
         import_data(self.root, base_db)
@@ -621,15 +636,23 @@ class DataTests(unittest.TestCase):
             "StartSubMissionList": [105470601],
             "SubMissionList": [
                 {"ID": 105470601, "TakeType": "Auto", "FinishType": "RaidFinishedAndTransfer", "ParamInt1": 40572},
-                {"ID": 105470602, "TakeType": "AnySequence", "TakeParamIntList": [105470601], "LevelFloorID": 10501001, "GroupIDList": [20]},
+                {"ID": 105470602, "TakeType": "AnySequence", "TakeParamIntList": [105470601], "FinishType": "StageWin", "ParamInt1": 2057201},
+                {"ID": 105470603, "TakeType": "AnySequence", "TakeParamIntList": [105470602], "LevelFloorID": 10501001, "GroupIDList": [20]},
             ],
         })
         self.write("Config/Level/Mission/1054707/MissionInfo_1054707.json", {
             "StartSubMissionList": [105470701],
             "SubMissionList": [{"ID": 105470701, "TakeType": "Auto", "LevelFloorID": 40572001, "GroupIDList": [1]}],
         })
+        self.write("Config/Level/Mission/1054801/MissionInfo_1054801.json", {
+            "StartSubMissionList": [105480101],
+            "SubMissionList": [{"ID": 105480101, "TakeType": "Auto", "LevelFloorID": 10501001, "GroupIDList": [30]}],
+        })
         self.write("Config/Level/GroupGraph/F40572001/Group_F40572001_G1.json", {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470601}]}]})
+        self.write("Config/Level/SubLevelGraph/StageBgTalk_2057201.json", {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.InsertBattlePerform", "BattlePerformPath": "Story/BattlePerformance/2057201/BattlePerform205720101.json"}]}]})
+        self.write("Story/BattlePerformance/2057201/BattlePerform205720101.json", {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.TriggerCustomString", "CustomString": {"Value": "TalkSentence_157060501"}}]}]})
         self.write("Config/Level/GroupGraph/F10501001/Group_F10501001_G20.json", {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470609}]}]})
+        self.write("Config/Level/GroupGraph/F10501001/Group_F10501001_G30.json", {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470612}]}]})
 
         source_zip = Path(self.temp.name) / "source.zip"
         with zipfile.ZipFile(source_zip, "w") as archive:
@@ -640,10 +663,10 @@ class DataTests(unittest.TestCase):
         payload_gz = Path(self.temp.name) / "script_order.json.gz"
         update_report = update_script_order(base_db, source=source_zip, export_file=payload_gz)
         self.assertTrue(update_report["audit"]["ok"])
-        self.assertEqual((update_report["order"]["missions"], update_report["order"]["scripts"]), (1, 2))
+        self.assertEqual((update_report["order"]["missions"], update_report["order"]["scripts"]), (1, 4))
         import_report = update_script_order(clone_db, import_file=payload_gz)
         self.assertTrue(import_report["audit"]["ok"])
-        self.assertEqual([l["script"] for l in get_mission(base_db, "1054706")["lines"]], [s01, s09])
+        self.assertEqual([l["script"] for l in get_mission(base_db, "1054706")["lines"]], [s01, s05, s09, s12])
         self.assertEqual(get_mission(clone_db, "1054706")["lines"], get_mission(base_db, "1054706")["lines"])
 
 

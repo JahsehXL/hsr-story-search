@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStoryModel, focusStory, resolveFullMissionStory, resolveStory, sceneStatusLabel, shareStoryAnchor, shouldShowSceneDivider, storyBlocks, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
+import { buildStoryModel, focusStory, resolveFullMissionStory, resolveStory, sceneStatusLabel, shareStoryAnchor, shouldShowTrailingExtraDivider, storyBlocks, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
 import type { DialogueLine } from '../src/types.ts';
 
 function line(id: string, sequence: number, branch: string, values: Partial<DialogueLine> = {}): DialogueLine {
@@ -293,18 +293,21 @@ test('mutually exclusive alt branches, inline alt blocks, nested options, and 10
   assert.equal(stride.groups[0].segments.length, 2);
 });
 
-test('scene labels and dividers hide boundaries between confirmed ordered scripts', () => {
+test('scene labels and trailing extra divider avoid clutter across storyline scripts', () => {
   const ordered = new Set(['Story/Discussion/Mission/1054706/DS105470630.json', 'Recovered/Mission/1054706/1570628.json']);
-  assert.equal(sceneStatusLabel('Recovered/Mission/1054706/1570628.json', undefined, ordered), '');
-  assert.equal(sceneStatusLabel('Recovered/Mission/1054706/1570635.json', undefined, ordered), '补录对白 · 场景位置待核实');
-  assert.equal(sceneStatusLabel('Story/BattlePerformance/123/B.json', undefined, ordered), '战斗对白');
+  assert.equal(sceneStatusLabel('Recovered/Mission/1054706/1570628.json'), '');
+  assert.equal(sceneStatusLabel('Recovered/Mission/1054706/1570635.json'), '');
+  assert.equal(sceneStatusLabel('Story/BattlePerformance/123/B.json'), '战斗对白');
+  assert.equal(sceneStatusLabel('DS.json', '比试中的战斗对白'), '比试中的战斗对白');
+
+  assert.equal(shouldShowTrailingExtraDivider(undefined, 'Recovered/Mission/1054706/1570635.json', ordered), false);
+  assert.equal(shouldShowTrailingExtraDivider('DS105470630.json', 'Recovered/Mission/1054706/1570628.json', ordered), false);
   assert.equal(
-    shouldShowSceneDivider('Story/Discussion/Mission/1054706/DS105470630.json', 'Recovered/Mission/1054706/1570628.json', ordered),
-    false,
-  );
-  assert.equal(
-    shouldShowSceneDivider('Recovered/Mission/1054706/1570628.json', 'Recovered/Mission/1054706/1570635.json', ordered),
+    shouldShowTrailingExtraDivider('Recovered/Mission/1054706/1570628.json', 'Recovered/Mission/1054706/1570635.json', ordered),
     true,
   );
-  assert.equal(shouldShowSceneDivider('Recovered/Mission/1054706/1570635.json', undefined, ordered), false);
+  assert.equal(
+    shouldShowTrailingExtraDivider('Recovered/Mission/1054706/1570635.json', 'Recovered/Mission/1054706/1570636.json', ordered),
+    false,
+  );
 });

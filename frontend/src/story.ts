@@ -495,21 +495,25 @@ export function resolveFullMissionStory(
   return { groups, selections, initialSelections, altSelections, initialAltSelections };
 }
 
-export function sceneStatusLabel(script: string, explicitLabel?: string, orderedScripts?: ReadonlySet<string>): string {
+export function sceneStatusLabel(script: string, explicitLabel?: string): string {
   if (explicitLabel) return explicitLabel;
   if (script.startsWith('Story/BattlePerformance/')) return '战斗对白';
-  if (script.startsWith('Recovered/')) {
-    return orderedScripts?.has(script) ? '' : '补录对白 · 场景位置待核实';
-  }
   return '';
 }
 
-export function shouldShowSceneDivider(
+export function isTrailingExtraScene(script: string, orderedScripts?: ReadonlySet<string>): boolean {
+  return script.startsWith('Recovered/') && !orderedScripts?.has(script);
+}
+
+export function shouldShowTrailingExtraDivider(
+  previousScript: string | undefined,
   currentScript: string,
-  nextScript?: string,
   orderedScripts?: ReadonlySet<string>,
 ): boolean {
-  if (!nextScript || currentScript === nextScript) return false;
-  return !(orderedScripts?.has(currentScript) && orderedScripts.has(nextScript));
+  return Boolean(
+    previousScript
+    && !isTrailingExtraScene(previousScript, orderedScripts)
+    && isTrailingExtraScene(currentScript, orderedScripts),
+  );
 }
 
