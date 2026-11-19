@@ -45,22 +45,56 @@ NON_SPEAKER_ENTITIES = {*SCENE_LOCATIONS, "开拓者", "星际和平公司", "�
 
 STOPWORD_PATTERN = re.compile(
     r"关于|为什么|怎么|什么|如何|哪里|哪个|时候|地方|告诉|讨论|争论|对话|剧情|故事|台词|"
+    r"交谈|聊天|说话|说出|说到|说起|提到|那一段|这一段|那句话|这句话|那段|这段|那句|这句|一段|一句|"
+    r"拿出|放出|展示|展现|发挥|使用|"
     r"她的|他的|我的|你的|他们|她们|我们|你们|自己|可以|因为|所以|但是|然后|如果|或者|以及|还有|"
     r"就是|不是|没有|一个|一些|这个|那个|这些|那些|用出|使出|[的了和与跟同在于是有把被向对给让叫去来到从往着过吗呢吧啊呀么]"
 )
+
+_SYNONYM_GROUPS = (
+    ("实力", "力量", "本事", "能力"),
+    ("真相", "秘密"),
+    ("游乐园", "乐园"),
+    ("争论", "争执", "吵架"),
+    ("唤醒", "苏醒", "叫醒"),
+    ("打架", "战斗", "交手", "比试"),
+)
+TERM_SYNONYMS: dict[str, tuple[str, ...]] = {
+    term: tuple(other for other in group if other != term)
+    for group in _SYNONYM_GROUPS
+    for term in group
+}
+
+
+def _term_match_score(term: str, haystack: str) -> float:
+    if term in haystack:
+        return 1.0
+    if any(alt in haystack for alt in TERM_SYNONYMS.get(term, ())):
+        return 0.85
+    return 0.0
+
+
+def _fts_term_group(term: str) -> str:
+    tokens = list(dict.fromkeys(
+        t[:2] for t in (term, *TERM_SYNONYMS.get(term, ())) if len(t) >= 2
+    ))
+    quoted = ['"' + token.replace('"', '""') + '"' for token in tokens]
+    return quoted[0] if len(quoted) == 1 else "(" + " OR ".join(quoted) + ")"
 
 
 def _extract_content_terms(query: str) -> list[str]:
     text = query.lower()
     terms: list[str] = []
+    has_entity = False
     for ent in KNOWN_ENTITIES:
         if ent in text:
             terms.append(ent)
-            text = text.replace(ent, " ")
+            has_entity = True
+            text = re.sub(re.escape(ent) + r"(?:[说讲问喊劝](?=[\u3400-\u9fff]{2,}))?", " ", text)
     cleaned = STOPWORD_PATTERN.sub(" ", text)
     for part in re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", cleaned):
         if len(part) >= 2:
-            if len(part) > 4 and re.fullmatch(r"[\u3400-\u9fff]+", part):
+            if (len(part) > 4 or (has_entity and len(part) == 4)) and re.fullmatch(r"[\u3400-\u9fff]+", part):
                 for idx in range(0, len(part) - 1, 2):
                     terms.append(part[idx:idx + 2])
                 if len(part) % 2 == 1:
@@ -77,7 +111,28 @@ def _compact(text: str) -> str:
 def _scene_description(terms: list[str]) -> tuple[list[str], list[str]]:
     actors = [term for term in terms if term in KNOWN_ENTITIES and term not in NON_SPEAKER_ENTITIES]
     topics = [term for term in terms if term not in KNOWN_ENTITIES]
-    return actors, topics if len(actors) >= 2 and len(topics) >= 2 else []
+    return actors, topics if len(actors) >= 2 and len(topics) >= 1 else []
+
+
+def _scene_line_evidence(actors: list[str], topics: list[str], raw_text: str, speakers: set[str] | list[str]) -> int:
+    """Rate single-line co-occurrence of scene actors and topic terms (3 strongest, 0 none)."""
+    if not topics or len(actors) < 2 or not all(any(speaker.startswith(actor) for speaker in speakers) for actor in actors):
+        return 0
+    level = 0
+    for raw_line in raw_text.split("\n"):
+        spk, ltxt = raw_line.split("：", 1) if "：" in raw_line else ("", raw_line)
+        lcompact = _compact(ltxt)
+        all_topics = all(_term_match_score(term, lcompact) > 0 for term in topics)
+        any_topic = any(_term_match_score(term, lcompact) > 0 for term in topics)
+        spk_actor = next((actor for actor in actors if spk.startswith(actor)), None)
+        addressed_other = bool(spk_actor and any(actor != spk_actor and actor in lcompact for actor in actors))
+        if all_topics and addressed_other:
+            return 3
+        if all_topics:
+            level = max(level, 2)
+        elif any_topic and addressed_other:
+            level = max(level, 1)
+    return level
 
 
 def semantic_context_bonus(content_terms: list[str], text: str, mission: dict, speakers: set[str]) -> float:
@@ -85,14 +140,17 @@ def semantic_context_bonus(content_terms: list[str], text: str, mission: dict, s
     if not content_terms:
         return 0.0
     haystack = _compact(" ".join((text, mission.get("mission_name", ""), mission.get("chapter", ""), mission.get("world", ""))))
-    coverage = sum(term in haystack for term in content_terms) / len(content_terms)
+    coverage = sum(_term_match_score(term, haystack) for term in content_terms) / len(content_terms)
     actors = [term for term in content_terms if term in KNOWN_ENTITIES and term not in NON_SPEAKER_ENTITIES]
     actor_coverage = sum(any(speaker.startswith(actor) for speaker in speakers) for actor in actors) / len(actors) if actors else 0.0
     locations = [term for term in content_terms if term in SCENE_LOCATIONS]
     world = _compact(mission.get("world", ""))
     location_coverage = sum(location in world for location in locations) / len(locations) if locations else 0.0
+    scene_actors, topics = _scene_description(content_terms)
+    evidence = _scene_line_evidence(scene_actors, topics, text, speakers)
+    scene_extra = {3: 0.08, 2: 0.045}.get(evidence, 0.0)
     # A single action word cannot outweigh all actors and the scene location.
-    return 0.10 * coverage + 0.06 * actor_coverage + 0.05 * location_coverage
+    return 0.10 * coverage + 0.06 * actor_coverage + 0.05 * location_coverage + scene_extra
 
 
 def _subterms(text: str) -> list[str]:
@@ -229,9 +287,9 @@ def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False, filter
                 words = re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", variant.lower())
                 content_terms = content_by_variant[variant]
                 topics = topics_by_variant[variant]
-                topic_line = bool(topics) and all(term in line_compact for term in topics)
+                topic_line = bool(topics) and all(_term_match_score(term, line_compact) > 0 for term in topics)
                 coverage = sum(len(word) for word in words if word in line_text_lower or word in line_compact)
-                text_sub_cov = sum(len(term) for term in (content_terms or _subterms(variant)) if term in line_compact)
+                text_sub_cov = sum(len(term) * _term_match_score(term, line_compact) for term in (content_terms or _subterms(variant)))
                 speaker_cov = sum(len(word) for word in words if word in speaker_compact) if substantive else 0
                 scores.append((spk_ok, exact_text, topic_line, score, coverage, text_sub_cov, substantive, speaker_cov, -idx))
             line_scores.append(max(scores))
@@ -268,6 +326,15 @@ def get_chunks(path: Path | str, ids: list[int], query: str = "") -> list[dict]:
         return _results(conn, ids, normalize_text(query))
 
 
+def _fuzzy_similarity(query: str, value: str) -> float:
+    if not query or not value:
+        return 0.0
+    sim = partial_ratio(query, value)
+    if len(value) < len(query):
+        sim *= len(value) / len(query)
+    return sim
+
+
 def _score_fields(query: str, fields: dict[str, str], allow_fuzzy: bool = False) -> tuple[float, str, str]:
     """Keep scene text ahead of names and avoid fuzzy matches on inherited metadata."""
     query = query.lower()
@@ -288,7 +355,7 @@ def _score_fields(query: str, fields: dict[str, str], allow_fuzzy: bool = False)
         elif words and all(word in value or word in value_compact for word in words):
             candidate = (exact_weights[field] - 30.0, "keyword", field)
         elif allow_fuzzy and field in {"text", "speaker", "mission"} and len(query) >= 3 and words:
-            similarity = max(partial_ratio(query, value), partial_ratio(query_compact, value_compact) if query_compact else 0.0)
+            similarity = max(_fuzzy_similarity(query, value), _fuzzy_similarity(query_compact, value_compact) if query_compact else 0.0)
             # A single shared character is insufficient evidence for a fuzzy hit.
             threshold = 65 if len(query) >= 4 else 75
             if similarity < threshold:
@@ -310,23 +377,27 @@ def _score_fields(query: str, fields: dict[str, str], allow_fuzzy: bool = False)
                 best = (195.0, "keyword", "mission")
             else:
                 best = (150.0, "keyword", "metadata")
-    if (best[0] == 0.0 or best[1] == "fuzzy") and len(words) == 1 and len(words[0]) >= 5:
-        content_terms = _extract_content_terms(words[0])
+    content_terms = _extract_content_terms(query) if ((len(words) == 1 and len(words[0]) >= 5) or (len(words) >= 2 and len(query_compact) >= 5)) else []
+    has_known_entity = len(words) >= 2 and any(term in KNOWN_ENTITIES for term in content_terms)
+    if (best[0] == 0.0 or best[1] == "fuzzy") and ((len(words) == 1 and len(words[0]) >= 5) or has_known_entity):
         if len(content_terms) >= 2:
             compact_fields = {k: _compact(normalize_text(v)) for k, v in fields.items()}
             combined_compact = " ".join(compact_fields.values())
             text_and_mission = compact_fields.get("text", "") + " " + compact_fields.get("mission", "")
-            matched_terms = [t for t in content_terms if t in combined_compact]
+            term_scores = {t: _term_match_score(t, combined_compact) for t in content_terms}
+            matched_terms = [t for t, s in term_scores.items() if s > 0]
+            weighted_ratio = sum(term_scores.values()) / len(content_terms)
             topic_terms = [t for t in content_terms if t not in KNOWN_ENTITIES]
             actor_terms = [t for t in content_terms if t in KNOWN_ENTITIES and t not in NON_SPEAKER_ENTITIES]
-            topic_hits = [t for t in topic_terms if t in text_and_mission]
-            ratio = len(matched_terms) / len(content_terms)
-            topic_ok = (not topic_terms) or len(topic_hits) > 0
-            actor_ok = not actor_terms or any(t in combined_compact for t in actor_terms)
-            if topic_ok and actor_ok and (len(matched_terms) == len(content_terms) or (len(content_terms) >= 3 and len(matched_terms) >= 2 and ratio >= 0.65)):
-                text_hits = sum(1 for t in matched_terms if t in compact_fields.get("text", ""))
-                topic_ratio = (len(topic_hits) / len(topic_terms)) if topic_terms else 1.0
-                base = 235.0 + ratio * 15.0 + topic_ratio * 20.0 if text_hits > 0 else 190.0 + ratio * 15.0
+            topic_score_sum = sum(_term_match_score(t, text_and_mission) for t in topic_terms)
+            actor_hits = sum(1 for t in actor_terms if t in combined_compact)
+            topic_ok = (not topic_terms) or topic_score_sum > 0
+            actor_ok = (not actor_terms) or actor_hits > 0
+            if topic_ok and actor_ok and (len(matched_terms) == len(content_terms) or (len(content_terms) >= 3 and len(matched_terms) >= 2 and weighted_ratio >= 0.65)):
+                text_hits = sum(1 for t in matched_terms if _term_match_score(t, compact_fields.get("text", "")) > 0)
+                actor_ratio = (actor_hits / len(actor_terms)) if actor_terms else 1.0
+                topic_ratio = (topic_score_sum / len(topic_terms)) if topic_terms else 1.0
+                base = (225.0 + weighted_ratio * 15.0 + topic_ratio * 18.0 + actor_ratio * 14.0) if text_hits > 0 else (185.0 + weighted_ratio * 15.0 + actor_ratio * 10.0)
                 target_field = "text" if text_hits > 0 else ("speaker" if any(t in compact_fields.get("speaker", "") for t in matched_terms) else "mission")
                 best = (base, "keyword", target_field)
     return best
@@ -413,17 +484,33 @@ def lexical_search(path: Path | str, query: str, filters: dict | None = None, li
                     candidate_ids.add(row["id"])
                     fts_ranks[row["id"]] = min(fts_ranks.get(row["id"], 0.0), float(row["rank"]))
             content_terms = _extract_content_terms(variant)
-            if len(content_terms) >= 2 and not allow_fuzzy:
-                ct_bigrams = [t[:2] for t in content_terms if len(t) >= 2][:8]
-                if len(ct_bigrams) >= 2:
-                    ct_expr = " AND ".join('"' + token.replace('"', '""') + '"' for token in ct_bigrams)
+            if len(content_terms) >= 2:
+                ct_groups = [_fts_term_group(t) for t in content_terms if len(t) >= 2][:8]
+                ct_hits = 0
+                if len(ct_groups) >= 2:
+                    ct_expr = " AND ".join(ct_groups)
                     ct_rows = conn.execute(f"""SELECT c.id,bm25(chunks_fts) rank FROM chunks_fts
                         JOIN chunks c ON c.id=chunks_fts.rowid JOIN missions m ON m.id=c.mission_id
                         WHERE chunks_fts MATCH ? {condition} ORDER BY rank LIMIT ?""",
                         [ct_expr] + filter_args + [max(250, limit * 3)]).fetchall()
+                    ct_hits = len(ct_rows)
                     for row in ct_rows:
                         candidate_ids.add(row["id"])
                         fts_ranks[row["id"]] = min(fts_ranks.get(row["id"], 0.0), float(row["rank"]))
+                if len(ct_groups) >= 3 and ct_hits < limit:
+                    actors = [t for t in content_terms if t in KNOWN_ENTITIES]
+                    topics = [t for t in content_terms if t not in KNOWN_ENTITIES]
+                    if actors and topics:
+                        actor_expr = " AND ".join(_fts_term_group(a) for a in actors[:4])
+                        for topic in topics[:4]:
+                            partial_expr = actor_expr + " AND " + _fts_term_group(topic)
+                            partial_rows = conn.execute(f"""SELECT c.id,bm25(chunks_fts) rank FROM chunks_fts
+                                JOIN chunks c ON c.id=chunks_fts.rowid JOIN missions m ON m.id=c.mission_id
+                                WHERE chunks_fts MATCH ? {condition} ORDER BY rank LIMIT 100""",
+                                [partial_expr] + filter_args).fetchall()
+                            for row in partial_rows:
+                                candidate_ids.add(row["id"])
+                                fts_ranks[row["id"]] = min(fts_ranks.get(row["id"], 0.0), float(row["rank"]))
             or_tokens = bigrams if (len(bigrams) >= 2 and not allow_fuzzy) else tokens
             expression = " OR ".join('"' + token.replace('"', '""') + '"' for token in or_tokens)
             rows = conn.execute(f"""SELECT c.id,bm25(chunks_fts) rank FROM chunks_fts
@@ -464,12 +551,10 @@ def lexical_search(path: Path | str, query: str, filters: dict | None = None, li
                                     break
                 scene_bonus = 0.0
                 speakers = fields["speaker"].split(",")
+                raw_text = row["text"] or ""
                 for actors, topics in descriptions:
-                    if not topics or not all(any(speaker.startswith(actor) for speaker in speakers) for actor in actors):
-                        continue
-                    compact_lines = map(_compact, body_text.split("\n"))
-                    if any(all(term in line for term in topics) for line in compact_lines):
-                        scene_bonus = 12.0
+                    scene_bonus = max(scene_bonus, {3: 20.0, 2: 12.0, 1: 6.0, 0: 0.0}[_scene_line_evidence(actors, topics, raw_text, speakers)])
+                    if scene_bonus >= 20.0:
                         break
                 type_bonus = 1.5 if row["type"] and row["type"] != "其他任务" else 0.0
                 bonus = (4.0 if line_match[0] >= 265.0 else 0.0) + char_bonus + scene_bonus + type_bonus + min(3.9, max(0.0, -fts_ranks.get(row["id"], 0.0)) * 0.15)

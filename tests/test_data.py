@@ -149,7 +149,7 @@ class DataTests(unittest.TestCase):
         texts.update({
             "11": "你是幕后黑手吧。", "13": "噫，别再说了！在恐怖片里，出现的这人肯定是幕后黑手。",
             "200": "世界图像的时代", "201": "星期日", "202": "知更鸟",
-            "203": "我们关于笼中鸟的争论该结束了。", "204": "这只星穹列车上的小鸟终于飞起来了。",
+            "203": "我们关于笼中鸟的争论该结束了。", "204": "这只星穹列车上的小鸟终于飞起来了。", "205": "丹恒……",
         })
         mission_id, v_script, v_sids = VERIFIED_SCENES[0]
         texts.update({str(sid): f"演出对白 {idx}" for idx, sid in enumerate(v_sids)})
@@ -160,11 +160,13 @@ class DataTests(unittest.TestCase):
         sentences.extend([
             {"TalkSentenceID": 157010101, "TalkSentenceText": {"Hash": 203}, "TextmapTalkSentenceName": {"Hash": 201}},
             {"TalkSentenceID": 157010102, "TalkSentenceText": {"Hash": 204}, "TextmapTalkSentenceName": {"Hash": 202}},
+            {"TalkSentenceID": 157010103, "TalkSentenceText": {"Hash": 205}, "TextmapTalkSentenceName": {"Hash": 4}},
             *[{"TalkSentenceID": sid, "TalkSentenceText": {"Hash": sid}, "TextmapTalkSentenceName": {"Hash": 15 if sid == 201110602 else 4}}
               for sid in v_sids],
         ])
         self.write("ExcelOutput/TalkSentenceConfig.json", sentences)
         self.simple_perf("Story/Mission/1054701/Story105470101.json", [157010101, 157010102])
+        self.simple_perf("Story/Mission/1054701/Story105470102.json", [157010103])
         rich_db = Path(self.temp.name) / "rich.db"
         stats = import_data(self.root, rich_db, baseline=first_db)
         self.assertEqual((stats["preserved_embedding_inputs"], stats["verified_scene_lines"]), (0, len(v_sids)))
@@ -177,8 +179,15 @@ class DataTests(unittest.TestCase):
         self.assertEqual(lexical_search(rich_db, "星期日和知更鸟关于笼中鸟的争论")[0]["mission_id"], "1054701")
         f_hit = lexical_search(rich_db, "恐怖片才会出现的幕后黑手", allow_fuzzy=True)[0]
         self.assertEqual((f_hit["speaker"], f_hit["match_type"], f_hit["branch"]), ("三月七", "fuzzy", "stay"))
-        v_hit = lexical_search(rich_db, "三月七让丹恒用出隐藏的力量", allow_fuzzy=True)[0]
-        self.assertEqual((v_hit["mission_id"], v_hit["script"], v_hit["sentence_id"]), (mission_id, v_script, "201110601"))
+        for q, use_fuzzy in (
+            ("三月七让丹恒用出隐藏的力量", True),
+            ("三月七给丹恒说用出隐藏实力", False),
+            ("三月七给丹恒说用出隐藏实力", True),
+            ("三月七 丹恒 隐藏实力", False),
+        ):
+            v_hit = lexical_search(rich_db, q, allow_fuzzy=use_fuzzy)[0]
+            self.assertEqual((v_hit["mission_id"], v_hit["script"], v_hit["sentence_id"]), (mission_id, v_script, "201110601"), q)
+        self.assertFalse(any(item["sentence_id"] == "157010103" for item in lexical_search(rich_db, "三月七给丹恒说用出隐藏实力", allow_fuzzy=True)))
         v_detail = get_mission(rich_db, mission_id, line_id=v_hit["line_id"])
         found = next(i for i, line in enumerate(v_detail["lines"]) if line["id"] == v_hit["line_id"])
         self.assertEqual(v_detail["lines"][found + 1]["text"], texts["201110602"])
@@ -189,6 +198,10 @@ class DataTests(unittest.TestCase):
         self.assertEqual(set(_extract_content_terms("卡芙卡在空间站唤醒开拓者")), {"卡芙卡", "空间站", "开拓者", "唤醒"})
         self.assertEqual(set(_extract_content_terms("大黑塔与黑塔讨论空间站")), {"大黑塔", "黑塔", "空间站"})
         self.assertEqual(set(_extract_content_terms("星期日和知更鸟关于谐乐鸽笼子的对话")), {"星期日", "知更鸟", "谐乐", "鸽笼", "笼子"})
+        self.assertEqual(set(_extract_content_terms("三月七给丹恒说用出隐藏实力")), {"三月七", "丹恒", "隐藏", "实力"})
+        self.assertEqual(set(_extract_content_terms("三月七给丹恒说隐藏实力")), {"三月七", "丹恒", "隐藏", "实力"})
+        self.assertEqual(set(_extract_content_terms("丹恒与景元在幽囚狱交谈")), {"丹恒", "景元", "幽囚狱"})
+        self.assertEqual(_score_fields("三月七给丹恒说用出隐藏实力", {"text": "丹恒……", "speaker": "三月七"}, allow_fuzzy=True)[0], 0.0)
 
         terms = _extract_content_terms("卡芙卡在空间站唤醒开拓者")
         direct = semantic_context_bonus(terms, "卡芙卡：这儿？一个空间站，不重要。", {"world": "空间站「黑塔」"}, {"卡芙卡"})
@@ -199,6 +212,11 @@ class DataTests(unittest.TestCase):
         unrelated = {"text": "我记得自己在空间站被唤醒。", "speaker": "开拓者"}
         self.assertEqual(_score_fields("卡芙卡在空间站唤醒开拓者", unrelated)[0], 0.0)
         self.assertGreater(_score_fields("卡芙卡在空间站唤醒开拓者", {**unrelated, "speaker": "卡芙卡"})[0], 0.0)
+        hidden_terms = _extract_content_terms("三月七给丹恒说用出隐藏实力")
+        self.assertGreater(
+            semantic_context_bonus(hidden_terms, "三月七：喂，丹恒，快把你隐藏的力量用出来呀！", {}, {"三月七", "丹恒"}),
+            semantic_context_bonus(hidden_terms, "三月七：医生说丹恒被带走了，赢了才能证明我的实力。", {}, {"三月七"}),
+        )
 
     def test_mirrored_scripts_captions_and_references(self):
         mirror = "Story/Mission/1/Story1.json"
