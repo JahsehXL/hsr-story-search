@@ -4,7 +4,6 @@ import os
 import sqlite3
 import tempfile
 import threading
-import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -16,7 +15,6 @@ from fastapi.testclient import TestClient
 from backend.app import create_app
 from backend.embeddings import EmbeddingError, embed
 from backend.runtime import ClosingConnection, Runtime, safe_extract
-from backend.settings import Settings
 
 
 def make_database(path):
@@ -52,13 +50,28 @@ class RuntimeTests(unittest.TestCase):
         self.runtime.close()
         self.temp.cleanup()
 
-    def test_snapshot_package_roundtrip_and_metadata_overlay(self):
+    def test_snapshot_package_roundtrip_and_tamper_traversal_guards(self):
         first = self.runtime.install_snapshot(self.database)
         self.runtime.update_mission("1", "1.0", "https://example.com/source", "verified")
         package = self.runtime.export_package()
         self.assertTrue(package.is_file())
         with zipfile.ZipFile(package) as archive:
             self.assertEqual(set(archive.namelist()), {"manifest.json", "story.db"})
+
+        bad_pkg = self.root / "tampered.zip"
+        with zipfile.ZipFile(package) as original, zipfile.ZipFile(bad_pkg, "w") as output:
+            output.writestr("manifest.json", original.read("manifest.json"))
+            output.writestr("story.db", b"tampered")
+        with self.assertRaises(ValueError):
+            self.runtime.install_package(bad_pkg, self.root / "tampered")
+
+        traversal = self.root / "bad.zip"
+        with zipfile.ZipFile(traversal, "w") as archive:
+            archive.writestr("../escape", "bad")
+        with self.assertRaises(ValueError):
+            safe_extract(traversal, self.root / "unpack")
+        self.assertFalse((self.root / "escape").exists())
+
         snapshot = self.runtime.install_package(package, self.root / "unpacked")
         path, current = self.runtime.active_path()
         self.assertEqual(snapshot, current)
@@ -67,24 +80,6 @@ class RuntimeTests(unittest.TestCase):
         self.runtime.rollback()
         self.assertNotEqual(self.runtime.active_path()[1], current)
         self.assertTrue(self.runtime.active_path(first)[0].is_file())
-
-    def test_safe_extract_rejects_traversal_and_duplicate(self):
-        archive = self.root / "bad.zip"
-        with zipfile.ZipFile(archive, "w") as package:
-            package.writestr("../escape", "bad")
-        with self.assertRaises(ValueError):
-            safe_extract(archive, self.root / "unpack")
-        self.assertFalse((self.root / "escape").exists())
-
-    def test_package_tampering_rejected(self):
-        self.runtime.install_snapshot(self.database)
-        package = self.runtime.export_package()
-        bad = self.root / "tampered.zip"
-        with zipfile.ZipFile(package) as original, zipfile.ZipFile(bad, "w") as output:
-            output.writestr("manifest.json", original.read("manifest.json"))
-            output.writestr("story.db", b"tampered")
-        with self.assertRaises(ValueError):
-            self.runtime.install_package(bad, self.root / "tampered")
 
     def test_api_budget_and_secret_redaction(self):
         self.runtime.settings.update({"embedding": {"api_key": "secret-test-key"}, "limits": {"daily_api_calls": 1}})
@@ -101,8 +96,10 @@ class RuntimeTests(unittest.TestCase):
         self.runtime.settings.update({"embedding": config})
         job = {"id": "test", "status": "running"}
         self.runtime.controls["test"] = {"pause": threading.Event(), "cancel": threading.Event()}
+
         def fake(texts, *args, **kwargs):
             return [[1., 0., 0.] if "列车" in text else [0., 1., 0.] for text in texts]
+
         with patch("backend.runtime.embed", side_effect=fake) as mock:
             self.runtime.build_index(self.database, job)
             self.runtime.install_snapshot(self.database)
@@ -143,13 +140,6 @@ class AuthTests(unittest.TestCase):
                 exact = client.post("/api/v1/search", json={"query": "回到列车", "mode": "text"})
                 self.assertEqual(exact.json()["results"][0]["match_type"], "exact")
 
-    def test_explicit_mode_has_precedence_over_environment(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HSR_MODE": "server"}):
-            app = create_app(Path(directory), mode="local", bootstrap_token="explicit-local")
-            with TestClient(app, base_url="http://127.0.0.1") as client:
-                self.assertEqual(client.get("/api/v1/status").json()["mode"], "local")
-                self.assertEqual(client.post("/api/v1/auth/bootstrap", json={"token": "explicit-local"}).status_code, 200)
-
     def test_search_pins_snapshot_across_metadata_update(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -186,9 +176,7 @@ class AuthTests(unittest.TestCase):
                 route = "/api/v1/admin/upload/" + state["upload_id"]
                 midpoint = len(content) // 2
                 first = client.put(route + "?offset=0", content=content[:midpoint])
-                self.assertEqual(first.status_code, 200)
-                self.assertEqual(first.json()["offset"], midpoint)
-                self.assertFalse(first.json()["complete"])
+                self.assertEqual((first.status_code, first.json()["offset"], first.json()["complete"]), (200, midpoint, False))
                 self.assertEqual(client.put(route + "?offset=0", content=content[:midpoint]).status_code, 409)
                 self.assertEqual(client.get(route).json()["offset"], midpoint)
                 last = client.put(route + f"?offset={midpoint}", content=content[midpoint:])
@@ -196,20 +184,27 @@ class AuthTests(unittest.TestCase):
                 self.assertEqual(client.get(route).json()["offset"], len(content))
                 self.assertEqual((Path(directory) / "uploads" / (state["upload_id"] + ".zip")).read_bytes(), content)
 
-    def test_bootstrap_one_time_origin_and_admin(self):
-        with tempfile.TemporaryDirectory() as directory:
-            app = create_app(Path(directory), bootstrap_token="bootstrap-test")
+    def test_bootstrap_origin_explicit_mode_role_separation_and_upload_limits(self):
+        from starlette.formparsers import MultiPartParser
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HSR_MODE": "server"}):
+            app = create_app(Path(directory), mode="local", bootstrap_token="bootstrap-test")
             with TestClient(app, base_url="http://127.0.0.1") as client:
+                self.assertEqual(client.get("/api/v1/status").json()["mode"], "local")
                 self.assertFalse(client.get("/api/v1/status").json()["authenticated"])
                 self.assertEqual(client.get("/api/v1/admin/settings").status_code, 401)
+                with patch.object(MultiPartParser, "parse", side_effect=AssertionError("unauthorized body was parsed")):
+                    self.assertEqual(client.post("/api/v1/admin/upload", files={"file": ("data.zip", b"example", "application/zip")}).status_code, 401)
                 self.assertEqual(client.post("/api/v1/auth/bootstrap", json={"token": "bootstrap-test"}, headers={"Origin": "https://evil.example"}).status_code, 403)
                 self.assertEqual(client.post("/api/v1/auth/bootstrap", json={"token": "bootstrap-test"}).status_code, 200)
                 self.assertTrue(client.get("/api/v1/status").json()["admin"])
                 self.assertEqual(client.post("/api/v1/auth/bootstrap", json={"token": "bootstrap-test"}).status_code, 401)
                 self.assertEqual(client.get("/api/v1/admin/settings").status_code, 200)
                 self.assertEqual(client.get("/api/v1/status", headers={"Host": "evil.example"}).status_code, 403)
+                self.assertEqual(client.put("/api/v1/admin/settings", content=b"{}", headers={"Content-Length": "999999999999", "Content-Type": "application/json"}).status_code, 413)
+                self.assertEqual(client.put("/api/v1/admin/settings", content=b"{}", headers={"Content-Length": "invalid", "Content-Type": "application/json"}).status_code, 400)
+                self.assertEqual(client.put("/api/v1/admin/settings", content=(b'{"embedding":{"model":"' + b"x" * (1024 * 1024) + b'"}}'), headers={"Content-Type": "application/json"}).status_code, 413)
 
-    def test_server_role_separation(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HSR_ADMIN_CODE": "admin-password-long", "HSR_ACCESS_CODE": "friend-code-long"}):
             app = create_app(Path(directory), mode="server")
             with TestClient(app, base_url="https://story.example") as client:
@@ -220,30 +215,15 @@ class AuthTests(unittest.TestCase):
                 self.assertEqual(client.post("/api/v1/auth/login", json={"code": "admin-password-long", "admin": True}).status_code, 200)
                 self.assertEqual(client.get("/api/v1/admin/settings").status_code, 200)
 
-    def test_upload_auth_precedes_multipart_parsing_and_body_limits(self):
-        from starlette.formparsers import MultiPartParser
-        with tempfile.TemporaryDirectory() as directory:
-            app = create_app(Path(directory), bootstrap_token="bootstrap-test")
-            with TestClient(app, base_url="http://127.0.0.1") as client:
-                with patch.object(MultiPartParser, "parse", side_effect=AssertionError("unauthorized body was parsed")):
-                    response = client.post("/api/v1/admin/upload", files={"file": ("data.zip", b"example", "application/zip")})
-                    self.assertEqual(response.status_code, 401)
-                self.assertEqual(client.post("/api/v1/auth/bootstrap", json={"token": "bootstrap-test"}).status_code, 200)
-                self.assertEqual(client.put("/api/v1/admin/settings", content=b"{}", headers={"Content-Length": "999999999999", "Content-Type": "application/json"}).status_code, 413)
-                self.assertEqual(client.put("/api/v1/admin/settings", content=b"{}", headers={"Content-Length": "invalid", "Content-Type": "application/json"}).status_code, 400)
-                def body():
-                    yield b'{"embedding": {"model": "'
-                    yield b"x" * (1024 * 1024)
-                    yield b'"}}'
-                self.assertEqual(client.put("/api/v1/admin/settings", content=body(), headers={"Content-Type": "application/json"}).status_code, 413)
-
 
 class EmbeddingTests(unittest.TestCase):
     def test_response_order_and_invalid_dimension(self):
         config = {"base_url": "https://example.com/v1", "model": "model", "dimensions": 2, "timeout": 5}
         real_client = httpx.Client
+
         def client(*args, **kwargs):
             return real_client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"data": [{"index": 1, "embedding": [0., 1.]}, {"index": 0, "embedding": [1., 0.]}]})))
+
         with patch("backend.embeddings.httpx.Client", side_effect=client):
             self.assertEqual(embed(["a", "b"], config, "secret"), [[1., 0.], [0., 1.]])
             with self.assertRaises(EmbeddingError):

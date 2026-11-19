@@ -500,7 +500,7 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
   font-size: 11.5px;
 }
 .scene-end-line {
-  flex: 1;
+  flex: 1 1 20px;
   height: 1px;
   background: repeating-linear-gradient(
     to right,
@@ -514,6 +514,7 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
   flex-wrap: wrap;
   justify-content: center;
   gap: 4px;
+  max-width: 100%;
   padding: 3px 10px;
   border-radius: 999px;
   border: 1px dashed var(--line);

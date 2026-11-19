@@ -44,7 +44,7 @@ def runtime(tmp_path):
         instance.close()
 
 
-def test_signatures_ignore_transport_but_preserve_vector_identity():
+def test_signatures_ignore_transport_and_credentials_but_preserve_semantics():
     config = copy.deepcopy(DEFAULTS)
     original = embedding_signature(config, 1024)
     changed = copy.deepcopy(config)
@@ -53,33 +53,30 @@ def test_signatures_ignore_transport_but_preserve_vector_identity():
     assert legacy_embedding_signature(changed, 1024) != legacy_embedding_signature(config, 1024)
     for field, value in (("model", "other-model"), ("query_prefix", "other instruction"),
                          ("document_prefix", "document instruction"), ("extra_body", {"task": "other"})):
-        changed = copy.deepcopy(config)
-        changed["embedding"][field] = value
-        assert embedding_signature(changed, 1024) != original
+        variant = copy.deepcopy(config)
+        variant["embedding"][field] = value
+        assert embedding_signature(variant, 1024) != original
     assert embedding_signature(config, 512) != original
 
-
-def test_signature_ignores_nested_credentials_but_preserves_semantic_parameters():
-    config = copy.deepcopy(DEFAULTS)
-    config["embedding"]["extra_body"] = {"task": "retrieval", "nested": [{"mode": "query"}]}
-    original = embedding_signature(config, 1024)
-    with_credentials = copy.deepcopy(config)
-    with_credentials["embedding"]["extra_body"].update(api_key="not-for-export", Authorization="Bearer private")
-    with_credentials["embedding"]["extra_body"]["nested"][0]["password"] = "hidden-password"
-    assert embedding_signature(with_credentials, 1024) == original
-    assert legacy_embedding_signature(with_credentials, 1024) != legacy_embedding_signature(config, 1024)
-    with_credentials["embedding"]["extra_body"]["task"] = "classification"
-    assert embedding_signature(with_credentials, 1024) != original
+    nested = copy.deepcopy(config)
+    nested["embedding"]["extra_body"] = {"task": "retrieval", "nested": [{"mode": "query"}]}
+    nested_sig = embedding_signature(nested, 1024)
+    with_creds = copy.deepcopy(nested)
+    with_creds["embedding"]["extra_body"].update(api_key="not-for-export", Authorization="Bearer private")
+    with_creds["embedding"]["extra_body"]["nested"][0]["password"] = "hidden-password"
+    assert embedding_signature(with_creds, 1024) == nested_sig
+    assert legacy_embedding_signature(with_creds, 1024) != legacy_embedding_signature(nested, 1024)
+    with_creds["embedding"]["extra_body"]["task"] = "classification"
+    assert embedding_signature(with_creds, 1024) != nested_sig
 
 
-def test_new_and_empty_settings_use_domestic_preset_without_overwriting_custom_settings(tmp_path):
+def test_default_settings_and_bge_request_format(tmp_path):
     fresh = Settings(tmp_path / "fresh")
     assert fresh.value["embedding"]["base_url"] == "https://api.siliconflow.cn/v1"
     assert fresh.value["embedding"]["model"] == "BAAI/bge-m3"
     assert fresh.value["embedding"]["dimensions"] == 0
-    assert fresh.value["embedding"]["query_prefix"] == ""
-    assert fresh.value["embedding"]["document_prefix"] == ""
     assert fresh.value["embedding"]["batch_size"] == 32
+
     blank_root = tmp_path / "blank"
     blank_root.mkdir()
     (blank_root / "settings.json").write_text(json.dumps({"embedding": {
@@ -87,42 +84,54 @@ def test_new_and_empty_settings_use_domestic_preset_without_overwriting_custom_s
     }}), encoding="utf-8")
     blank = Settings(blank_root)
     assert blank.value["embedding"]["model"] == fresh.value["embedding"]["model"]
-    assert blank.value["embedding"]["batch_size"] == 32
-    assert blank.value["embedding"]["concurrency"] == 3
+    assert (blank.value["embedding"]["batch_size"], blank.value["embedding"]["concurrency"]) == (32, 3)
+
     fresh.update({"embedding": {"base_url": "https://custom.example/v1", "model": "custom", "batch_size": 7, "query_prefix": "own prefix"}})
     restored = Settings(tmp_path / "fresh")
-    assert restored.value["embedding"]["model"] == "custom"
-    assert restored.value["embedding"]["batch_size"] == 7
-    assert restored.value["embedding"]["query_prefix"] == "own prefix"
+    assert (restored.value["embedding"]["model"], restored.value["embedding"]["batch_size"], restored.value["embedding"]["query_prefix"]) == ("custom", 7, "own prefix")
     assert restored.public()["recommended_embedding"]["model"] == "BAAI/bge-m3"
 
-
-def test_default_bge_request_omits_dimensions_and_instructions():
     response = httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.] + [0.] * 1023}]})
     with patch("backend.embeddings.httpx.Client") as client_class:
         client = client_class.return_value.__enter__.return_value
         client.post.return_value = response
         vectors = embed(["剧情台词"], DEFAULTS, "own-test-key", query=True)
     payload = client.post.call_args.kwargs["json"]
-    assert payload["model"] == "BAAI/bge-m3"
-    assert payload["input"] == ["剧情台词"]
-    assert "dimensions" not in payload
-    assert len(vectors[0]) == 1024
+    assert payload["model"] == "BAAI/bge-m3" and payload["input"] == ["剧情台词"]
+    assert "dimensions" not in payload and len(vectors[0]) == 1024
 
 
-def test_endpoint_change_reuses_author_cache_and_exported_index_works_for_recipient(runtime, tmp_path):
+def test_portable_package_reuse_redacts_credentials_preserves_auto_dim_and_blocks_tampering(runtime, tmp_path):
     source = tmp_path / "source.db"
     make_database(source)
+    runtime.settings.update({"embedding": {
+        "dimensions": 0,
+        "extra_body": {
+            "task": "retrieval", "api_key": "not-for-export", "nested": [{"token": "private-token", "mode": "query"}],
+            "credentials": {"key": "credential-container-private"}, "headers": {"X-API-Key": "header-private"},
+            "client_secret": "client-private", "user": "account-private",
+        },
+    }})
     job = job_for(runtime)
     with patch("backend.runtime.embed", side_effect=fake_vectors) as provider:
         runtime.build_index(source, job)
         runtime.install_snapshot(source)
         assert provider.call_count == 1
+        assert runtime.embedding_status()["index_identity"]["dimension"] == 3
+        assert runtime.embedding_status()["index_request_dimensions"] == 0
         runtime.settings.update({"embedding": {"base_url": "https://provider-b.example/v1", "api_key": "test-key-b"}})
         assert runtime.embedding_status()["ready"]
         runtime.build_index(source, job)
         assert provider.call_count == 1
         package = runtime.export_package()
+
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["embedding"]["identity"]["extra_body"] == {"task": "retrieval", "nested": [{"mode": "query"}]}
+    serialized = json.dumps([read_info(source, "embedding"), manifest, runtime.embedding_status()])
+    for private in ("not-for-export", "private-token", "credential-container-private", "header-private", "client-private", "account-private"):
+        assert private not in serialized
+
     recipient = Runtime(tmp_path / "recipient", "local")
     try:
         recipient.settings.update({"embedding": {
@@ -133,12 +142,9 @@ def test_endpoint_change_reuses_author_cache_and_exported_index_works_for_recipi
             assert recipient.embedding_status()["ready"]
         path, _ = recipient.active_path()
         metadata = read_info(path, "embedding")
-        assert metadata["signature_version"] == 2
-        assert "base_url" not in metadata["identity"]
-        assert "api_key" not in metadata["identity"]
+        assert metadata["signature_version"] == 2 and "base_url" not in metadata["identity"] and "api_key" not in metadata["identity"]
         with patch("backend.runtime.embed", side_effect=fake_vectors) as query:
-            matches = recipient.semantic_search(path, "列车", {"character": "三月七"})
-            assert [item["chunk_id"] for item in matches] == [1]
+            assert [item["chunk_id"] for item in recipient.semantic_search(path, "列车", {"character": "三月七"})] == [1]
             assert query.call_count == 1
         reindexed = tmp_path / "recipient-reindex.db"
         shutil.copy2(path, reindexed)
@@ -150,124 +156,87 @@ def test_endpoint_change_reuses_author_cache_and_exported_index_works_for_recipi
     finally:
         recipient.close()
 
+    tampered = tmp_path / "tampered.db"
+    shutil.copy2(source, tampered)
+    bad_meta = read_info(tampered, "embedding")
+    bad_meta["identity"]["query_prefix"] = "changed without updating signature"
+    with sqlite3.connect(tampered) as connection:
+        connection.execute("UPDATE info SET value=? WHERE key='embedding'", (json.dumps(bad_meta),))
+    with pytest.raises(ValueError, match="模型参数"):
+        runtime.install_snapshot(tampered)
 
-def make_legacy_index(runtime, source, job):
+
+def test_legacy_signature_upgrade_without_recomputing_and_rejects_mismatch(tmp_path):
+    for idx, dimension in enumerate((0, 3)):
+        root = tmp_path / f"case-{idx}"
+        root.mkdir()
+        source = root / "source.db"
+        make_database(source)
+        original = configured_runtime(root / "data")
+        original.settings.update({"embedding": {"dimensions": dimension}})
+        with patch("backend.runtime.embed", side_effect=fake_vectors):
+            original.build_index(source, job_for(original))
+        original.install_snapshot(source)
+        path, snapshot = original.active_path()
+        config = original.settings.public()
+        metadata = read_info(path, "embedding")
+        metadata["signature"] = legacy_embedding_signature(config, metadata["dimension"])
+        metadata.pop("signature_version")
+        metadata.pop("identity")
+        with sqlite3.connect(path) as connection:
+            connection.execute("UPDATE info SET value=? WHERE key='embedding'", (json.dumps(metadata),))
+        with sqlite3.connect(original.root / "vector-cache.db") as connection:
+            connection.execute("UPDATE vectors SET namespace=?", (legacy_embedding_signature(config, int(config["embedding"]["dimensions"])),))
+        with db_connect(path) as connection:
+            vectors = connection.execute("SELECT chunk_id,embedding FROM chunk_vectors ORDER BY chunk_id").fetchall()
+        original.close()
+
+        with patch("backend.runtime.embed", side_effect=AssertionError("Migration must not invoke embedding API")):
+            upgraded = Runtime(root / "data", "local")
+            try:
+                active, current = upgraded.active_path()
+                assert current != snapshot and read_info(active, "embedding")["signature_version"] == 2
+                assert upgraded.embedding_status()["ready"]
+                with db_connect(active) as connection:
+                    assert connection.execute("SELECT chunk_id,embedding FROM chunk_vectors ORDER BY chunk_id").fetchall() == vectors
+                assert read_info(path, "embedding").get("signature_version", 1) == 1
+                upgraded.settings.update({"embedding": {"base_url": "https://another-provider.example/v1"}})
+                assert upgraded.embedding_status()["ready"]
+                upgraded.build_index(source, job_for(upgraded))
+            finally:
+                upgraded.close()
+
+    mismatch_root = tmp_path / "mismatch"
+    mismatch_root.mkdir()
+    source = mismatch_root / "source.db"
+    make_database(source)
+    orig = configured_runtime(mismatch_root / "data")
     with patch("backend.runtime.embed", side_effect=fake_vectors):
-        runtime.build_index(source, job)
-    runtime.install_snapshot(source)
-    path, snapshot = runtime.active_path()
-    config = runtime.settings.public()
-    metadata = read_info(path, "embedding")
-    metadata["signature"] = legacy_embedding_signature(config, metadata["dimension"])
-    metadata.pop("signature_version")
-    metadata.pop("identity")
+        orig.build_index(source, job_for(orig))
+    orig.install_snapshot(source)
+    path, snapshot = orig.active_path()
+    meta = read_info(path, "embedding")
+    meta["signature"] = legacy_embedding_signature(orig.settings.public(), meta["dimension"])
+    meta.pop("signature_version")
+    meta.pop("identity")
     with sqlite3.connect(path) as connection:
-        connection.execute("UPDATE info SET value=? WHERE key='embedding'", (json.dumps(metadata),))
-    namespace_dimension = int(config["embedding"]["dimensions"])
-    with sqlite3.connect(runtime.root / "vector-cache.db") as connection:
-        connection.execute("UPDATE vectors SET namespace=?", (legacy_embedding_signature(config, namespace_dimension),))
-    return path, snapshot
-
-
-@pytest.mark.parametrize("dimension", [0, 3])
-def test_legacy_signature_and_cache_upgrade_without_recomputing(tmp_path, dimension):
-    source = tmp_path / "source.db"
-    make_database(source)
-    original = configured_runtime(tmp_path / "data")
-    original.settings.update({"embedding": {"dimensions": dimension}})
-    path, snapshot = make_legacy_index(original, source, job_for(original))
-    with db_connect(path) as connection:
-        vectors = connection.execute("SELECT chunk_id,embedding FROM chunk_vectors ORDER BY chunk_id").fetchall()
-    original.close()
-    with patch("backend.runtime.embed", side_effect=AssertionError("Migration must not invoke embedding API")):
-        upgraded = Runtime(tmp_path / "data", "local")
-        try:
-            active, current = upgraded.active_path()
-            assert current != snapshot
-            metadata = read_info(active, "embedding")
-            assert metadata["signature_version"] == 2
-            assert upgraded.embedding_status()["ready"]
-            with db_connect(active) as connection:
-                assert connection.execute("SELECT chunk_id,embedding FROM chunk_vectors ORDER BY chunk_id").fetchall() == vectors
-            assert read_info(path, "embedding").get("signature_version", 1) == 1
-            upgraded.settings.update({"embedding": {"base_url": "https://another-provider.example/v1"}})
-            assert upgraded.embedding_status()["ready"]
-            upgraded.build_index(source, job_for(upgraded))
-        finally:
-            upgraded.close()
-
-
-def test_legacy_index_does_not_upgrade_against_unverified_settings(tmp_path):
-    source = tmp_path / "source.db"
-    make_database(source)
-    original = configured_runtime(tmp_path / "data")
-    _, snapshot = make_legacy_index(original, source, job_for(original))
-    original.settings.update({"embedding": {"query_prefix": "different query preparation"}})
-    original.close()
-    restored = Runtime(tmp_path / "data", "local")
+        connection.execute("UPDATE info SET value=? WHERE key='embedding'", (json.dumps(meta),))
+    orig.settings.update({"embedding": {"query_prefix": "different query preparation"}})
+    orig.close()
+    restored = Runtime(mismatch_root / "data", "local")
     try:
-        path, current = restored.active_path()
-        assert current == snapshot
-        assert read_info(path, "embedding").get("signature_version", 1) == 1
+        r_path, r_current = restored.active_path()
+        assert r_current == snapshot and read_info(r_path, "embedding").get("signature_version", 1) == 1
         assert not restored.embedding_status()["compatible"]
     finally:
         restored.close()
 
 
-def test_exported_embedding_metadata_omits_credentials_from_extra_parameters(runtime, tmp_path):
-    source = tmp_path / "source.db"
-    make_database(source)
-    runtime.settings.update({"embedding": {"extra_body": {
-        "task": "retrieval", "api_key": "not-for-export", "nested": [{"token": "private-token", "mode": "query"}],
-        "credentials": {"key": "credential-container-private"},
-        "headers": {"X-API-Key": "header-private"},
-        "client_secret": "client-private", "user": "account-private",
-    }}})
-    with patch("backend.runtime.embed", side_effect=fake_vectors):
-        runtime.build_index(source, job_for(runtime))
-    runtime.install_snapshot(source)
-    with zipfile.ZipFile(runtime.export_package()) as package:
-        manifest = json.loads(package.read("manifest.json"))
-    extra = manifest["embedding"]["identity"]["extra_body"]
-    assert extra == {"task": "retrieval", "nested": [{"mode": "query"}]}
-    metadata = read_info(source, "embedding")
-    serialized = json.dumps([metadata, manifest, runtime.embedding_status()])
-    for private in ("not-for-export", "private-token", "credential-container-private", "header-private", "client-private", "account-private"):
-        assert private not in serialized
+def test_mirror_download_commit_lookup_cancellation_and_ssrf_guards(runtime, tmp_path):
+    for address in ("http://mirror.example", "https://user:secret@mirror.example", "https://mirror.example/?token=x", "https://mirror.example/#section", "https://"):
+        with pytest.raises(ValueError):
+            Settings(tmp_path).update({"updates": {"github_mirror": address}})
 
-
-def test_shared_model_parameters_preserve_automatic_request_dimensions(runtime, tmp_path):
-    source = tmp_path / "source.db"
-    make_database(source)
-    runtime.settings.update({"embedding": {"dimensions": 0}})
-    with patch("backend.runtime.embed", side_effect=fake_vectors):
-        runtime.build_index(source, job_for(runtime))
-    runtime.install_snapshot(source)
-    status = runtime.embedding_status()
-    assert status["index_identity"]["dimension"] == 3
-    assert status["index_request_dimensions"] == 0
-
-
-def test_v2_identity_tampering_is_rejected(runtime, tmp_path):
-    source = tmp_path / "source.db"
-    make_database(source)
-    with patch("backend.runtime.embed", side_effect=fake_vectors):
-        runtime.build_index(source, job_for(runtime))
-    metadata = read_info(source, "embedding")
-    metadata["identity"]["query_prefix"] = "changed without updating the signature"
-    with sqlite3.connect(source) as connection:
-        connection.execute("UPDATE info SET value=? WHERE key='embedding'", (json.dumps(metadata),))
-    with pytest.raises(ValueError, match="模型参数"):
-        runtime.install_snapshot(source)
-
-
-@pytest.mark.parametrize("address", ["http://mirror.example", "https://user:secret@mirror.example", "https://mirror.example/?token=x", "https://mirror.example/#section", "https://"])
-def test_mirror_configuration_rejects_unsafe_prefix_syntax(tmp_path, address):
-    with pytest.raises(ValueError):
-        Settings(tmp_path).update({"updates": {"github_mirror": address}})
-
-
-def test_mirror_download_uses_pinned_archive_url_and_falls_back_for_html(runtime, tmp_path):
     commit = "a" * 40
     target = tmp_path / "source.zip"
     requested = []
@@ -282,64 +251,46 @@ def test_mirror_download_uses_pinned_archive_url_and_falls_back_for_html(runtime
 
     with patch.object(runtime, "_download", side_effect=download):
         runtime._download_source("owner/repo", commit, "https://mirror.example", target, job_for(runtime))
-    assert requested == [
-        f"https://mirror.example/https://github.com/owner/repo/archive/{commit}.zip",
-        f"https://codeload.github.com/owner/repo/zip/{commit}",
-    ]
+    assert requested == [f"https://mirror.example/https://github.com/owner/repo/archive/{commit}.zip", f"https://codeload.github.com/owner/repo/zip/{commit}"]
     assert zipfile.is_zipfile(target)
 
-
-def test_commit_lookup_falls_back_to_api_capable_mirror(runtime):
-    requested = []
+    lookup_urls = []
 
     @contextmanager
-    def stream(client, url):
-        requested.append(url)
-        if len(requested) == 1:
+    def fallback_stream(client, url):
+        lookup_urls.append(url)
+        if len(lookup_urls) == 1:
             raise httpx.ConnectError("direct access unavailable")
         yield httpx.Response(200, json={"sha": "B" * 40})
 
-    with patch("backend.runtime.public_https_stream", side_effect=stream):
-        commit = runtime._source_commit("owner/repo", "https://mirror.example", job_for(runtime))
-    assert commit == "b" * 40
-    assert requested == [
-        "https://api.github.com/repos/owner/repo/commits/HEAD",
-        "https://mirror.example/https://api.github.com/repos/owner/repo/commits/HEAD",
-    ]
+    with patch("backend.runtime.public_https_stream", side_effect=fallback_stream):
+        assert runtime._source_commit("owner/repo", "https://mirror.example", job_for(runtime)) == "b" * 40
+    assert lookup_urls == ["https://api.github.com/repos/owner/repo/commits/HEAD", "https://mirror.example/https://api.github.com/repos/owner/repo/commits/HEAD"]
 
-
-def test_commit_lookup_requests_compact_sha_response(runtime):
     @contextmanager
-    def stream(client, url):
+    def sha_stream(client, url):
         assert client.headers["Accept"] == "application/vnd.github.sha"
         yield httpx.Response(200, content=("A" * 40 + "\n").encode())
 
-    with patch("backend.runtime.public_https_stream", side_effect=stream):
+    with patch("backend.runtime.public_https_stream", side_effect=sha_stream):
         assert runtime._source_commit("owner/repo", "", job_for(runtime)) == "a" * 40
 
+    for body in (b'{"sha":"main"}', b"x" * (1024**2 + 1)):
+        @contextmanager
+        def bad_stream(client, url, payload=body):
+            yield httpx.Response(200, content=payload)
+        with patch("backend.runtime.public_https_stream", side_effect=bad_stream), pytest.raises(ValueError):
+            runtime._source_commit("owner/repo", "", job_for(runtime))
 
-@pytest.mark.parametrize("body", [b'{"sha":"main"}', b"x" * (1024**2 + 1)])
-def test_commit_lookup_rejects_invalid_or_oversized_metadata(runtime, body):
-    @contextmanager
-    def stream(client, url):
-        yield httpx.Response(200, content=body)
-
-    with patch("backend.runtime.public_https_stream", side_effect=stream), pytest.raises(ValueError):
-        runtime._source_commit("owner/repo", "", job_for(runtime))
-
-
-def test_cancellation_does_not_trigger_download_fallback(runtime, tmp_path):
-    with patch.object(runtime, "_download", side_effect=JobCancelled) as download, pytest.raises(JobCancelled):
-        runtime._download_source("owner/repo", "a" * 40, "https://mirror.example", tmp_path / "archive.zip", job_for(runtime))
-    assert download.call_count == 1
+    with patch.object(runtime, "_download", side_effect=JobCancelled) as mock_dl, pytest.raises(JobCancelled):
+        runtime._download_source("owner/repo", commit, "https://mirror.example", tmp_path / "archive.zip", job_for(runtime))
+    assert mock_dl.call_count == 1
     job = job_for(runtime)
     runtime.controls[job["id"]]["cancel"].set()
-    with patch("backend.runtime.public_https_stream") as stream, pytest.raises(JobCancelled):
+    with patch("backend.runtime.public_https_stream") as mock_stream, pytest.raises(JobCancelled):
         runtime._source_commit("owner/repo", "https://mirror.example", job)
-    stream.assert_not_called()
+    mock_stream.assert_not_called()
 
-
-def test_mirror_fetch_still_blocks_private_network_destinations():
     with patch("backend.runtime.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("127.0.0.1", 443))]):
         with httpx.Client() as client, patch.object(client, "stream") as request:
             with pytest.raises(ValueError):

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cleanMissionName, displayText, Empty, errorText, Highlight, missionTypeClass, speakerName, versionText } from './presentation';
-import { buildStoryModel, formatAltLabel, resolveFullMissionStory, sceneEndDividerSuffix, sceneStatusLabel, shareStoryAnchor, storyBlocks } from './story';
+import { buildStoryModel, formatAltLabel, resolveFullMissionStory, sceneStatusLabel, shareStoryAnchor, shouldShowSceneDivider, storyBlocks } from './story';
 import StoryBlock from './StoryBlock';
 import type { ChoiceSet } from './story';
 import type { DialogueLine, MissionResponse, Result } from './types';
@@ -261,10 +261,9 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
             const altSiblings = group.altSlot ? model.altGroups.get(group.altSlot) : undefined;
             const startsScene = groups[groupIndex - 1]?.script !== group.script;
             const nextGroup = groups[groupIndex + 1];
-            const endsScene = nextGroup?.script !== group.script;
+            const showSceneDivider = shouldShowSceneDivider(group.script, nextGroup?.script, orderedScripts);
             const sceneName = scriptDisplayName(group.script);
             const sceneLabel = sceneStatusLabel(group.script, group.lines[0]?.scene_label, orderedScripts);
-            const dividerSuffix = sceneEndDividerSuffix(group.script, nextGroup?.script, orderedScripts);
             return <div className={`story-segment ${isBranchFollowup ? 'branch-followup' : ''} ${altSiblings ? 'alt-branch-segment' : ''}`} key={group.key}>
               {startsScene && sceneLabel && <div className="branch-followup-header"><span>{sceneLabel}</span></div>}
               {isBranchFollowup && <div className="branch-followup-header"><span>↳ 当前所选回答的后续分支对白</span></div>}
@@ -298,12 +297,11 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
                   </div> : <ChoiceCard choice={segment.choice} selectedId={resolved.selections[segment.choice.id]} hitId={hitId} query={query} onChoose={line => choose(segment.choice, line)} onShare={onShare} />}
                 </StoryBlock>;
               })}
-              {endsScene && (
+              {showSceneDivider && (
                 <div className="scene-end-divider" role="separator" aria-label={`演出脚本结束：${sceneName}`}>
                   <span className="scene-end-line" aria-hidden="true" />
                   <span className="scene-end-badge">
-                    演出脚本结束 · <code>{sceneName}</code>
-                    {dividerSuffix}
+                    演出脚本结束 · <code>{sceneName}</code> · 以下为下一段独立脚本（跨脚本顺序以游戏内为准）
                   </span>
                   <span className="scene-end-line" aria-hidden="true" />
                 </div>

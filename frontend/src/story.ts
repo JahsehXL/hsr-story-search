@@ -499,18 +499,17 @@ export function sceneStatusLabel(script: string, explicitLabel?: string, ordered
   if (explicitLabel) return explicitLabel;
   if (script.startsWith('Story/BattlePerformance/')) return '战斗对白';
   if (script.startsWith('Recovered/')) {
-    return orderedScripts?.has(script) ? '补录对白' : '补录对白 · 场景位置待核实';
+    return orderedScripts?.has(script) ? '' : '补录对白 · 场景位置待核实';
   }
   return '';
 }
 
-export function sceneEndDividerSuffix(
+export function shouldShowSceneDivider(
   currentScript: string,
   nextScript?: string,
   orderedScripts?: ReadonlySet<string>,
-): string {
-  if (!nextScript) return '';
-  const transitionOrdered = Boolean(orderedScripts?.has(currentScript) && orderedScripts.has(nextScript));
-  return transitionOrdered ? ' · 按任务流程衔接下一段' : ' · 以下为下一段独立脚本（跨脚本顺序以游戏内为准）';
+): boolean {
+  if (!nextScript || currentScript === nextScript) return false;
+  return !(orderedScripts?.has(currentScript) && orderedScripts.has(nextScript));
 }
 
