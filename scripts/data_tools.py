@@ -11,6 +11,7 @@ if __package__ in (None, ""):
 
 from backend.data_maintenance import (
     audit_database, build_candidate, compare_databases, fetch_upstream, inspect_source, repair_metadata, package_candidate,
+    update_script_order,
 )
 
 
@@ -40,6 +41,11 @@ def main() -> None:
     package = commands.add_parser("package", help="Export an audited candidate ZIP for the management review workflow")
     package.add_argument("--database", type=Path, required=True)
     package.add_argument("--output", type=Path, required=True)
+    order = commands.add_parser("update-order", help="Compute or import official mission workflow script ordering")
+    order.add_argument("--database", type=Path, required=True)
+    order.add_argument("--source", type=Path, help="Raw game data directory or archive ZIP")
+    order.add_argument("--import-file", type=Path, help="Previously exported script_order .json or .json.gz")
+    order.add_argument("--export", type=Path, help="Export computed script_order payload to .json or .json.gz")
     args = parser.parse_args()
     if args.report and args.report.exists():
         parser.error("Report already exists; choose a new path")
@@ -58,6 +64,8 @@ def main() -> None:
             result = compare_databases(args.baseline, args.candidate)
         elif args.command == "package":
             result = package_candidate(args.database, args.output)
+        elif args.command == "update-order":
+            result = update_script_order(args.database, source=args.source, import_file=args.import_file, export_file=args.export)
         else:
             result = repair_metadata(args.database, args.output, args.metadata)
     except (ValueError, OSError, KeyError) as exc:

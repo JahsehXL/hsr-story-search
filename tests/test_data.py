@@ -1,9 +1,11 @@
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from backend.data import VERIFIED_SCENES, get_catalog, get_mission, import_data, normalize_text, open_db
+from backend.data_maintenance import update_script_order
 from backend.search import _extract_content_terms, _score_fields, get_chunks, lexical_search, semantic_context_bonus
 
 
@@ -866,6 +868,232 @@ class DataTests(unittest.TestCase):
                 ("223", 10100, "sequence:0#alt:1#rand:2"),
             ])
             self.assertEqual(len({r[3] for r in rows}), 4)
+
+    def _add_mission_with_sentences(self, mission_id: int, pairs: list[tuple[int, str]], mtype: str = "Main") -> None:
+        missions = json.loads((self.root / "ExcelOutput/MainMission.json").read_text(encoding="utf-8"))
+        if not any(m["MainMissionID"] == mission_id for m in missions):
+            missions.append({"MainMissionID": mission_id, "Name": {"Hash": 1}, "Type": mtype})
+            self.write("ExcelOutput/MainMission.json", missions)
+        texts = json.loads((self.root / "TextMap/TextMapCHS.json").read_text(encoding="utf-8"))
+        sentences = json.loads((self.root / "ExcelOutput/TalkSentenceConfig.json").read_text(encoding="utf-8"))
+        for sid, text in pairs:
+            texts[str(sid)] = text
+            sentences.append({"TalkSentenceID": sid, "TalkSentenceText": {"Hash": sid}, "TextmapTalkSentenceName": {"Hash": 4}})
+        self.write("TextMap/TextMapCHS.json", texts)
+        self.write("ExcelOutput/TalkSentenceConfig.json", sentences)
+
+    def _simple_perf(self, rel: str, sentence_ids: list[int]) -> None:
+        self.write(rel, {"OnStartSequece": [{"TaskList": [{
+            "$type": "RPG.GameCore.PlayAndWaitSimpleTalk",
+            "SimpleTalkList": [{"TalkSentenceID": sid} for sid in sentence_ids],
+        }]}]})
+
+    def test_mission_dag_order_and_fixedvalue_bubble_preserves_line_ids(self):
+        self._add_mission_with_sentences(1054706, [
+            (157063001, "人类的一分钟"),
+            (157062802, "再走近些吧"),
+            (157064201, "只是一个回答"),
+            (157063201, "我要怎么回去呢"),
+            (157063401, "这边"),
+        ])
+        s30 = "Story/Discussion/Mission/1054706/DS105470630.json"
+        s28 = "Recovered/Mission/1054706/1570628.json"
+        s42 = "Story/Discussion/Mission/1054706/DS105470642.json"
+        s32 = "Story/Discussion/Mission/1054706/DS105470632.json"
+        s34 = "Story/Mission/1054706/Story105470634.json"
+        self._simple_perf(s30, [157063001])
+        self._simple_perf(s42, [157064201])
+        self._simple_perf(s32, [157063201])
+        self._simple_perf(s34, [157063401])
+        self.write("ExcelOutput/PerformanceDS.json", [
+            {"PerformanceID": 105470630, "PerformancePath": s30},
+            {"PerformanceID": 105470642, "PerformancePath": s42},
+            {"PerformanceID": 105470632, "PerformancePath": s32},
+        ])
+        self.write("ExcelOutput/PerformanceD.json", [{"PerformanceID": 105470634, "PerformancePath": s34}])
+
+        without_dag = Path(self.temp.name) / "without-dag.db"
+        import_data(self.root, without_dag)
+
+        self.write("Config/Level/Mission/1054706/MissionInfo_1054706.partial.json", {
+            "StartSubMissionList": [105470615],
+            "SubMissionList": [
+                {"ID": 105470615, "TakeType": "Auto", "LevelFloorID": 10000000, "GroupIDList": [10]},
+                {"ID": 105470634, "TakeType": "AnySequence", "TakeParamIntList": [105470615], "LevelFloorID": 10000000, "GroupIDList": [11]},
+                {"ID": 105470635, "TakeType": "AnySequence", "TakeParamIntList": [105470634], "LevelFloorID": 10000000, "GroupIDList": [12]},
+            ],
+        })
+        self.write("Config/Level/GroupGraph/F10000000/Group_F10000000_G10.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470630},
+        ]}]})
+        self.write("Config/Level/GroupGraph/F10000000/Group_F10000000_G11.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.PlayMissionTalk", "StartSentenceID": {"FixedValue": {"Value": 157062800}}, "EndSentenceID": {"FixedValue": {"Value": 157062805}}},
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470642},
+        ]}]})
+        self.write("Config/Level/GroupGraph/F10000000/Group_F10000000_G12.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470632},
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 105470634},
+        ]}]})
+
+        with_dag = Path(self.temp.name) / "with-dag.db"
+        import_data(self.root, with_dag)
+        detail = get_mission(with_dag, "1054706")
+        self.assertEqual([line["script"] for line in detail["lines"]], [s30, s28, s42, s32, s34])
+        self.assertEqual(detail["ordered_scripts"], sorted([s30, s28, s42, s32, s34]))
+        with open_db(without_dag) as a, open_db(with_dag) as b:
+            self.assertEqual(list(a.execute("SELECT id FROM lines ORDER BY id")), list(b.execute("SELECT id FROM lines ORDER BY id")))
+            self.assertEqual(list(a.execute("SELECT content_hash FROM chunks ORDER BY id")), list(b.execute("SELECT content_hash FROM chunks ORDER BY id")))
+
+    def test_mission_dag_enable_cond_anysequence_playvideo_and_verified_order(self):
+        # 1) Shared persistent group with EnableCondition(Finish) must wait for MultiSequence join.
+        self._add_mission_with_sentences(1034109, [
+            (3410901, "开头"),
+            (3410902, "分支一"),
+            (3410903, "分支二"),
+            (3410950, "共同完成后"),
+        ])
+        for pid, sid in ((103410901, 3410901), (103410902, 3410902), (103410904, 3410903), (103410950, 3410950)):
+            folder = "Story/Discussion/Mission/1034109" if pid in (103410902, 103410904) else "Config/Level/Mission/1034109/Act"
+            prefix = "DS" if "Discussion" in folder else "Act"
+            self._simple_perf(f"{folder}/{prefix}{pid}.json", [sid])
+        self.write("Config/Level/Mission/1034109/MissionInfo_1034109.json", {
+            "StartSubMissionList": [103410901],
+            "SubMissionList": [
+                {"ID": 103410901, "TakeType": "Auto", "LevelFloorID": 10304001, "GroupIDList": [35]},
+                {"ID": 103410902, "TakeType": "AnySequence", "TakeParamIntList": [103410901], "LevelFloorID": 10304001, "GroupIDList": [36, 71]},
+                {"ID": 103410904, "TakeType": "AnySequence", "TakeParamIntList": [103410901], "LevelFloorID": 10304001, "GroupIDList": [72, 71]},
+                {"ID": 103410905, "TakeType": "MultiSequence", "TakeParamIntList": [103410902, 103410904], "LevelFloorID": 10304001, "GroupIDList": [37, 71]},
+            ],
+        })
+        for gid, pid, ptype in ((35, 103410901, "A"), (36, 103410902, "DS"), (72, 103410904, "DS"), (37, 103410905, "E")):
+            self.write(f"Config/Level/GroupGraph/F10304001/Group_F10304001_G{gid}.json", {"OnStartSequece": [{"TaskList": [
+                {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": ptype, "PerformanceID": pid},
+            ]}]})
+        self.write("Config/LevelOutput/SharedRuntimeGroup/Groups_P10304_F10304001/LevelGroup_P10304_F10304001_G71.json", {
+            "PropList": [{
+                "Dialog": {
+                    "EnableCondition": {"Conditions": [{"Type": "SubMission", "Phase": "Finish", "ID": 103410904}]},
+                    "LevelGraph": "Config/Level/PropDialogue/P10304/F10304001_G71/DialogueMain_G71.json",
+                },
+            }],
+        })
+        self.write("Config/Level/PropDialogue/P10304/F10304001_G71/DialogueMain_G71.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "E", "PerformanceID": 103410950},
+        ]}]})
+
+        # 2) AnySequence with multiple predecessors keeps both win/lose branches, ignores PlayVideo, honors VERIFIED_SCENE_ORDER.
+        self._add_mission_with_sentences(2022005, [
+            (222050201, "比试前"),
+            (222050601, "比试中"),
+            (222050302, "彦卿赢"),
+            (222050402, "云璃赢"),
+            (222050501, "收尾"),
+        ])
+        for sc in (
+            "Story/Discussion/Mission/2022005/DS202200502.json",
+            "Story/Discussion/Mission/2022005/DS202200503.json",
+            "Story/Discussion/Mission/2022005/DS202200504.json",
+            "Story/Mission/2022005/Story202200505.json",
+            "Config/Level/Mission/2022005/Act/Act202200506.json",
+        ):
+            self.write(sc, {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.PlayTimeline"}]}]})
+        self.write("Config/Level/Mission/2022005/MissionInfo_2022005.json", {
+            "StartSubMissionList": [202200502],
+            "SubMissionList": [
+                {"ID": 202200502, "TakeType": "Auto", "LevelFloorID": 40235001, "GroupIDList": [17]},
+                {"ID": 202200506, "TakeType": "AnySequence", "TakeParamIntList": [202200502]},
+                {"ID": 202200507, "TakeType": "AnySequence", "TakeParamIntList": [202200502]},
+                {"ID": 202200503, "TakeType": "AnySequence", "TakeParamIntList": [202200506, 202200507], "LevelFloorID": 40235001, "GroupIDList": [18]},
+                {"ID": 202200504, "TakeType": "AnySequence", "TakeParamIntList": [202200503], "LevelFloorID": 40235001, "GroupIDList": [19]},
+                {"ID": 202200505, "TakeType": "AnySequence", "TakeParamIntList": [202200504], "LevelFloorID": 40235001, "GroupIDList": [20]},
+            ],
+        })
+        self.write("Config/Level/GroupGraph/F40235001/Group_F40235001_G17.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 202200502},
+        ]}]})
+        self.write("Config/Level/GroupGraph/F40235001/Group_F40235001_G18.json", {"OnStartSequece": [{"TaskList": [{
+            "$type": "RPG.GameCore.PredicateTaskList",
+            "Predicate": {"$type": "RPG.GameCore.ByCompareSubMissionState", "SubMissionID": 202200506, "SubMissionState": "Finish"},
+            "SuccessTaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 202200503}],
+            "FailedTaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 202200504}],
+        }]}]})
+        self.write("Config/Level/GroupGraph/F40235001/Group_F40235001_G19.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "PlayVideo", "PerformanceID": 202200506},
+        ]}]})
+        self.write("Config/Level/GroupGraph/F40235001/Group_F40235001_G20.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 202200505},
+        ]}]})
+
+        db = Path(self.temp.name) / "dag-edge-cases.db"
+        import_data(self.root, db)
+
+        shared = get_mission(db, "1034109")
+        self.assertEqual([line["sentence_id"] for line in shared["lines"]], ["3410901", "3410902", "3410903", "3410950"])
+
+        contest = get_mission(db, "2022005")
+        self.assertEqual(
+            [line["sentence_id"] for line in contest["lines"]],
+            ["222050201", "222050601", "222050302", "222050402", "222050501"],
+        )
+        self.assertIn("Config/Level/Mission/2022005/Act/Act202200506.json::timeline-2220506", contest["ordered_scripts"])
+
+    def test_mission_dag_raid_zip_source_and_export_import_roundtrip(self):
+        self._add_mission_with_sentences(1054706, [
+            (157060101, "幻月内关卡"),
+            (157060901, "回到外层任务"),
+        ])
+        s01 = "Story/Discussion/Mission/1054706/DS105470601.json"
+        s09 = "Story/Discussion/Mission/1054706/DS105470609.json"
+        self._simple_perf(s01, [157060101])
+        self._simple_perf(s09, [157060901])
+
+        base_db = Path(self.temp.name) / "no-info-yet.db"
+        import_data(self.root, base_db)
+        reimported_db = Path(self.temp.name) / "clone.db"
+        import_data(self.root, reimported_db)
+
+        self.write("ExcelOutput/RaidConfig.json", [{"RaidID": 40572, "MainMissionIDList": [1054707]}])
+        self.write("Config/Level/Mission/1054706/MissionInfo_1054706.json", {
+            "StartSubMissionList": [105470601],
+            "SubMissionList": [
+                {"ID": 105470601, "TakeType": "Auto", "FinishType": "RaidFinishedAndTransfer", "ParamInt1": 40572},
+                {"ID": 105470602, "TakeType": "AnySequence", "TakeParamIntList": [105470601], "LevelFloorID": 10501001, "GroupIDList": [20]},
+            ],
+        })
+        self.write("Config/Level/Mission/1054707/MissionInfo_1054707.json", {
+            "StartSubMissionList": [105470701],
+            "SubMissionList": [{"ID": 105470701, "TakeType": "Auto", "LevelFloorID": 40572001, "GroupIDList": [1]}],
+        })
+        self.write("Config/Level/GroupGraph/F40572001/Group_F40572001_G1.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470601},
+        ]}]})
+        self.write("Config/Level/GroupGraph/F10501001/Group_F10501001_G20.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470609},
+        ]}]})
+
+        source_zip = Path(self.temp.name) / "source.zip"
+        with zipfile.ZipFile(source_zip, "w") as archive:
+            for item in self.root.rglob("*"):
+                if item.is_file():
+                    archive.write(item, f"TurnBasedGameData-test/{item.relative_to(self.root).as_posix()}")
+
+        payload_gz = Path(self.temp.name) / "script_order.json.gz"
+        update_report = update_script_order(base_db, source=source_zip, export_file=payload_gz)
+        self.assertTrue(update_report["audit"]["ok"])
+        self.assertEqual(update_report["order"]["missions"], 1)
+        self.assertEqual(update_report["order"]["scripts"], 2)
+        self.assertTrue(payload_gz.is_file())
+
+        import_report = update_script_order(reimported_db, import_file=payload_gz)
+        self.assertTrue(import_report["audit"]["ok"])
+        self.assertEqual(
+            [line["script"] for line in get_mission(base_db, "1054706")["lines"]],
+            [s01, s09],
+        )
+        self.assertEqual(
+            get_mission(reimported_db, "1054706")["lines"],
+            get_mission(base_db, "1054706")["lines"],
+        )
 
 
 if __name__ == "__main__":

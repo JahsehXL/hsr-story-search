@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .mission_order import apply_mission_script_orders, ensure_script_order_schema
 from .version_metadata import load_metadata, normalize_name
 
 
@@ -191,6 +192,7 @@ def create_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX chunk_line_reverse ON chunk_lines(line_id);
         CREATE INDEX edge_script ON edges(script);
     """)
+    ensure_script_order_schema(conn)
 
 
 class DatasetBuilder:
@@ -1223,6 +1225,8 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
         }
         stats.update(story_counts(conn))
         conn.executemany("INSERT INTO info(key,value) VALUES(?,?)", [(key, json.dumps(value, ensure_ascii=False)) for key, value in stats.items()])
+        report("order", 0, 1, "根据任务流程整理跨脚本顺序")
+        apply_mission_script_orders(source, conn)
         conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('optimize')")
         conn.commit()
         conn.execute("ANALYZE")
@@ -1264,13 +1268,30 @@ def get_catalog(path: Path | str) -> dict:
         return result
 
 
+def _script_trailing_num(script: str) -> int | None:
+    stem = str(script).split("::timeline-")[0].rsplit("/", 1)[-1].split(".")[0]
+    nums = re.findall(r"\d+", stem)
+    return int(nums[-1]) if nums else None
+
+
 def _script_sort_key(row: dict) -> tuple:
-    stem = str(row.get("script", "")).rsplit("/", 1)[-1].split(".")[0]
-    nums = [int(n) for n in re.findall(r"\d+", stem)]
     script = row.get("script", "")
+    trailing = _script_trailing_num(script)
     supplemental = script.startswith(("Verified/", "Recovered/", "Story/BattlePerformance/"))
-    order = VERIFIED_SCENE_ORDER.get(script, nums[-1] if nums else 0)
+    order = VERIFIED_SCENE_ORDER.get(script, trailing if trailing is not None else 0)
     return (supplemental, order, script, row.get("sequence", 0), row.get("position", 0))
+
+
+def _load_mission_script_order(conn: sqlite3.Connection, mission_id: str) -> dict[str, float]:
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='script_order'"
+    ).fetchone()
+    if not has_table:
+        return {}
+    return {
+        row[0]: float(row[1])
+        for row in conn.execute("SELECT script, rank FROM script_order WHERE mission_id=?", (mission_id,))
+    }
 
 
 def performance_script_id(script: str) -> str:
@@ -1320,7 +1341,30 @@ def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
             condition += " AND script=?"
             args.append(script)
         all_lines = [dict(row) for row in conn.execute(f"SELECT * FROM lines WHERE {condition}", args)]
-        all_lines.sort(key=_script_sort_key)
+        script_ranks = _load_mission_script_order(conn, str(mission_id))
+        ordered_scripts: set[str] = set()
+        if script_ranks:
+            num_to_rank: dict[int, float] = {}
+            for sc, rank in script_ranks.items():
+                if (num := _script_trailing_num(sc)) is not None:
+                    num_to_rank[num] = min(num_to_rank.get(num, rank), rank)
+            rank_prefix: dict[str, tuple[int, float]] = {}
+            for sc in {row["script"] for row in all_lines}:
+                if sc in script_ranks:
+                    rank_prefix[sc] = (0, script_ranks[sc])
+                    ordered_scripts.add(sc)
+                elif sc in VERIFIED_SCENE_ORDER:
+                    v = VERIFIED_SCENE_ORDER[sc]
+                    if int(v) in num_to_rank:
+                        rank_prefix[sc] = (0, num_to_rank[int(v)] + (v - int(v)))
+                        ordered_scripts.add(sc)
+                    else:
+                        rank_prefix[sc] = (1, 0.0)
+                else:
+                    rank_prefix[sc] = (1, 0.0)
+            all_lines.sort(key=lambda row: (*rank_prefix.get(row["script"], (1, 0.0)), *_script_sort_key(row)))
+        else:
+            all_lines.sort(key=_script_sort_key)
         if not script:
             all_lines, aliases = _collapse_mirrored_scripts(all_lines)
             line_id = aliases.get(line_id, line_id)
@@ -1342,6 +1386,7 @@ def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
         return {"mission": dict(mission), "lines": lines, "edges": edges, "anchor_line_id": line_id,
                 "recalls": [dict(row) for row in conn.execute("SELECT * FROM recalls WHERE mission_id=?", (str(mission_id),))],
                 "scripts": [row[0] for row in conn.execute("SELECT DISTINCT script FROM lines WHERE mission_id=? ORDER BY script", (str(mission_id),))],
+                "ordered_scripts": sorted(ordered_scripts),
                 "total": total, "offset": offset, "has_more": offset + len(lines) < total}
 
 

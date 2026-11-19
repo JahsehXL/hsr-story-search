@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cleanMissionName, displayText, Empty, errorText, Highlight, missionTypeClass, speakerName, versionText } from './presentation';
-import { buildStoryModel, formatAltLabel, resolveFullMissionStory, shareStoryAnchor, storyBlocks } from './story';
+import { buildStoryModel, formatAltLabel, resolveFullMissionStory, sceneEndDividerSuffix, sceneStatusLabel, shareStoryAnchor, storyBlocks } from './story';
 import StoryBlock from './StoryBlock';
 import type { ChoiceSet } from './story';
 import type { DialogueLine, MissionResponse, Result } from './types';
@@ -112,6 +112,7 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
   const customAltSelections = altOverrides.identity === identity ? altOverrides.selections : emptySelections;
   const resolved = useMemo(() => resolveFullMissionStory(model, hitId, customSelections, customAltSelections), [model, hitId, customSelections, customAltSelections]);
   const groups = useMemo(() => resolved.groups.map(group => ({ ...group, blocks: storyBlocks(group.segments) })), [resolved.groups]);
+  const orderedScripts = useMemo(() => new Set(detail?.ordered_scripts || []), [detail?.ordered_scripts]);
   const visibleLines = useMemo(
     () => {
       const selectedAnswers = new Set(Object.values(resolved.selections));
@@ -259,12 +260,11 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
             const isBranchFollowup = Boolean(group.branch && selectedTriggers.has(JSON.stringify([group.script, group.branch])));
             const altSiblings = group.altSlot ? model.altGroups.get(group.altSlot) : undefined;
             const startsScene = groups[groupIndex - 1]?.script !== group.script;
-            const endsScene = groups[groupIndex + 1]?.script !== group.script;
+            const nextGroup = groups[groupIndex + 1];
+            const endsScene = nextGroup?.script !== group.script;
             const sceneName = scriptDisplayName(group.script);
-            const sceneLabel = group.lines[0]?.scene_label || (
-              group.script.startsWith('Story/BattlePerformance/') ? '战斗对白'
-                : group.script.startsWith('Recovered/') ? '补录对白 · 场景位置待核实' : ''
-            );
+            const sceneLabel = sceneStatusLabel(group.script, group.lines[0]?.scene_label, orderedScripts);
+            const dividerSuffix = sceneEndDividerSuffix(group.script, nextGroup?.script, orderedScripts);
             return <div className={`story-segment ${isBranchFollowup ? 'branch-followup' : ''} ${altSiblings ? 'alt-branch-segment' : ''}`} key={group.key}>
               {startsScene && sceneLabel && <div className="branch-followup-header"><span>{sceneLabel}</span></div>}
               {isBranchFollowup && <div className="branch-followup-header"><span>↳ 当前所选回答的后续分支对白</span></div>}
@@ -303,7 +303,7 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
                   <span className="scene-end-line" aria-hidden="true" />
                   <span className="scene-end-badge">
                     演出脚本结束 · <code>{sceneName}</code>
-                    {groupIndex < groups.length - 1 ? ' · 以下为下一段独立脚本（跨脚本顺序以游戏内为准）' : ''}
+                    {dividerSuffix}
                   </span>
                   <span className="scene-end-line" aria-hidden="true" />
                 </div>

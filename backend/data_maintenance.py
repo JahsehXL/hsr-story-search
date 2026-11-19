@@ -14,6 +14,7 @@ import httpx
 import sqlite_vec
 
 from .data import IMPORTER_VERSION, MISSION_TRIGGER_PATTERN, import_data, open_db, read_records, source_root, source_scripts
+from .mission_order import apply_mission_script_orders, export_script_orders, import_script_orders
 from .settings import embedding_signature
 from .version_metadata import apply_versions, load_metadata
 
@@ -304,3 +305,28 @@ def package_candidate(database: Path | str, output: Path | str) -> dict:
         finally:
             runtime.close()
     return {"package": str(target), "sha256": checksum(target), "size": target.stat().st_size, "audit": audit}
+
+
+def update_script_order(
+    database: Path | str,
+    source: Path | str | None = None,
+    import_file: Path | str | None = None,
+    export_file: Path | str | None = None,
+) -> dict:
+    """Compute or import `script_order` into an existing database and optionally export it."""
+    if bool(source) == bool(import_file):
+        raise ValueError("请指定 --source（源目录或 ZIP）或 --import-file（脚本顺序数据包），二者选其一")
+    db_path = Path(database).resolve()
+    if not db_path.is_file():
+        raise ValueError(f"找不到数据库文件：{db_path}")
+    with open_db(db_path, readonly=False) as conn:
+        if source is not None:
+            order_stats = apply_mission_script_orders(source, conn)
+        else:
+            assert import_file is not None
+            order_stats = import_script_orders(conn, import_file)
+        export_info = export_script_orders(conn, export_file) if export_file is not None else None
+    result: dict = {"order": order_stats, "audit": audit_database(db_path)}
+    if export_info is not None:
+        result["export"] = export_info
+    return result

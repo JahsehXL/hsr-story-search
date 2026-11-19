@@ -128,6 +128,7 @@ export interface MissionResponse {
   lines: DialogueLine[];
   edges: { script: string; source: string; target: string; kind: string }[];
   recalls?: { name?: string; title?: string; path?: string; description?: string; verified?: boolean | number }[];
+  ordered_scripts?: string[];
   total: number;
   offset?: number;
   has_more?: boolean;

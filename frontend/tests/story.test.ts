@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildStoryModel, focusStory, resolveFullMissionStory, resolveStory, shareStoryAnchor, storyBlocks, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
+import { buildStoryModel, focusStory, resolveFullMissionStory, resolveStory, sceneEndDividerSuffix, sceneStatusLabel, shareStoryAnchor, storyBlocks, windowStoryGroup, withDefaultChoices } from '../src/story.ts';
 import type { DialogueLine } from '../src/types.ts';
 
 function line(id: string, sequence: number, branch: string, values: Partial<DialogueLine> = {}): DialogueLine {
@@ -379,5 +379,20 @@ test('adjacent option tasks inside a container with 100-stride positions form se
     line('c2-a', 0, 'start', { kind: 'option', position: 10100, trigger: 'c' }),
   ]);
   assert.equal(model.groups[0].segments.length, 2);
+});
+
+test('scene labels and end dividers distinguish mission-graph ordered transitions from fallback order', () => {
+  const ordered = new Set(['Story/Discussion/Mission/1054706/DS105470630.json', 'Recovered/Mission/1054706/1570628.json']);
+  assert.equal(sceneStatusLabel('Recovered/Mission/1054706/1570628.json', undefined, ordered), '补录对白');
+  assert.equal(sceneStatusLabel('Recovered/Mission/1054706/1570635.json', undefined, ordered), '补录对白 · 场景位置待核实');
+  assert.equal(
+    sceneEndDividerSuffix('Story/Discussion/Mission/1054706/DS105470630.json', 'Recovered/Mission/1054706/1570628.json', ordered),
+    ' · 按任务流程衔接下一段',
+  );
+  assert.equal(
+    sceneEndDividerSuffix('Recovered/Mission/1054706/1570628.json', 'Recovered/Mission/1054706/1570635.json', ordered),
+    ' · 以下为下一段独立脚本（跨脚本顺序以游戏内为准）',
+  );
+  assert.equal(sceneEndDividerSuffix('Recovered/Mission/1054706/1570628.json', undefined, ordered), '');
 });
 
