@@ -4,7 +4,7 @@ import { downloadJson, post, request, searchRequest } from './api';
 import { createSemanticSearchClient, indexReady, loadVisitorEndpoint, loadVisitorKey, saveVisitorEndpoint, saveVisitorKey, serverKeyReady, VISITOR_ENDPOINT_STORAGE, VISITOR_KEY_STORAGE } from './semantic';
 import type { SemanticContext } from './semantic';
 import Reader from './Reader';
-import { cleanMissionName, speakerName, errorText, versionText, Highlight, Empty } from './presentation';
+import { cleanMissionName, displayText, speakerName, errorText, missionTypeClass, versionText, Highlight, Empty } from './presentation';
 import type { Bookmark, Catalog, DialogueLine, Filters, MissionResponse, Result, SearchMode, SearchResponse, Status } from './types';
 
 const Admin = lazy(() => import('./Admin'));
@@ -57,7 +57,9 @@ function matchLabel(result: Result) {
   return labels[result.match_type] || '相关对白';
 }
 
-function SelectField({ label, value, values, onChange, searchable = false }: { label: string; value: string; values: string[]; onChange: (v: string) => void; searchable?: boolean }) {
+function SelectField({ label, value, values, onChange, searchable = false, format = (v: string) => labels[v] || v }: {
+  label: string; value: string; values: string[]; onChange: (v: string) => void; searchable?: boolean; format?: (value: string) => string;
+}) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -80,9 +82,9 @@ function SelectField({ label, value, values, onChange, searchable = false }: { l
     };
   }, [open, searchable]);
 
-  const displayValue = value ? (labels[value] || value) : '全部';
+  const displayValue = value ? format(value) : '全部';
   const filtered = searchable && search.trim()
-    ? values.filter(v => (labels[v] || v).toLowerCase().includes(search.trim().toLowerCase()))
+    ? values.filter(v => format(v).toLowerCase().includes(search.trim().toLowerCase()))
     : values;
 
   return <div ref={wrapRef} className={`filter-dropdown ${value ? 'has-value' : ''} ${open ? 'is-open' : ''}`}>
@@ -123,7 +125,7 @@ function SelectField({ label, value, values, onChange, searchable = false }: { l
           <span>查找「{search.trim()}」</span>
         </button>}
         {filtered.map(v => <button key={v} type="button" role="option" aria-selected={value === v} className={`filter-option ${value === v ? 'is-selected' : ''}`} onClick={() => { onChange(v); setOpen(false); }}>
-          <span>{labels[v] || v}</span>{value === v && <span aria-hidden="true">✓</span>}
+          <span>{format(v)}</span>{value === v && <span aria-hidden="true">✓</span>}
         </button>)}
       </div>
     </div>}
@@ -383,14 +385,29 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!readable || booted.current) return;
-    booted.current = true;
-    const route = initial.current;
-    if (route.mission) {
-      const result: Result = { chunk_id: 0, mission_id: route.mission, mission_name: '', chapter: '', world: '', version: '', version_status: 'unknown', speaker: '', text: '', line_id: route.line, script: route.script, branch: '', match_type: '', score: 0 };
-      void selectResult(result, route.snapshot, false);
-    } else if (route.query) void runSearch(route.query);
-  }, [readable, runSearch, selectResult]);
+    if (!readable) return;
+    function openRoute() {
+      const route = readRoute();
+      searchId.current++;
+      searchController.current?.abort();
+      setSearching(false);
+      setSearchError('');
+      setResponse(null);
+      setQuery(route.query);
+      setSearchedQuery(route.query);
+      clearReader();
+      if (route.mission) {
+        const result: Result = { chunk_id: 0, mission_id: route.mission, mission_name: '', chapter: '', world: '', version: '', version_status: 'unknown', speaker: '', text: '', line_id: route.line, script: route.script, branch: '', match_type: '', score: 0 };
+        void selectResult(result, route.snapshot, false);
+      } else if (route.query) void runSearch(route.query);
+    }
+    if (!booted.current) {
+      booted.current = true;
+      openRoute();
+    }
+    window.addEventListener('hashchange', openRoute);
+    return () => window.removeEventListener('hashchange', openRoute);
+  }, [readable, runSearch, selectResult, clearReader]);
 
   useEffect(() => { try { localStorage.setItem('hsr-bookmarks', JSON.stringify(bookmarks)); } catch { setToast('浏览器存储空间不足，请导出收藏备份'); } }, [bookmarks]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 3500); return () => clearTimeout(timer); }, [toast]);
@@ -419,18 +436,29 @@ export default function App() {
     await selectResult({ ...selected, version, version_status: state }, saved.snapshot);
     setToast('版本标注已保存'); await refresh();
   }
-  async function moreContext() {
+  async function moreContext(before = false) {
     if (!selected || !detail || reading) return;
     const generation = readerId.current;
+    const currentOffset = detail.offset || 0;
+    const previousOffset = Math.max(0, currentOffset - 1000);
+    if (before && currentOffset === 0) return;
     setReading(true);
-    const p = new URLSearchParams({ offset: String((detail.offset || 0) + detail.lines.length), limit: '1000' });
+    const p = new URLSearchParams(before
+      ? { offset: String(previousOffset), limit: String(currentOffset - previousOffset) }
+      : { offset: String(currentOffset + detail.lines.length), limit: '1000' });
     if (detail.snapshot || response?.snapshot) p.set('snapshot', detail.snapshot || response!.snapshot);
     const controller = new AbortController();
     readerController.current = controller;
     try { const extra = await request<MissionResponse>(`missions/${encodeURIComponent(selected.mission_id)}?${p}`, { signal: controller.signal }); if (generation === readerId.current) setDetail(old => {
         if (!old) return extra;
         const edges = new Map([...old.edges, ...extra.edges].map(edge => [JSON.stringify(edge), edge]));
-        return { ...extra, offset: old.offset, lines: [...old.lines, ...extra.lines], edges: [...edges.values()] };
+        return {
+          ...old,
+          offset: before ? extra.offset : old.offset,
+          has_more: before ? old.has_more : extra.has_more,
+          lines: before ? [...extra.lines, ...old.lines] : [...old.lines, ...extra.lines],
+          edges: [...edges.values()],
+        };
       }); }
     catch (err) { if (generation === readerId.current) setToast(errorText(err)); } finally { if (generation === readerId.current) setReading(false); }
   }
@@ -474,7 +502,7 @@ export default function App() {
             <SelectField label="世界" value={filters.world} values={catalog.worlds} onChange={v => applyFilters({ ...filters, world: v })} />
             <SelectField label="版本" value={filters.version} values={catalog.versions} onChange={v => applyFilters({ ...filters, version: v })} />
             <SelectField label="任务类型" value={filters.type} values={catalog.types} onChange={v => applyFilters({ ...filters, type: v })} />
-            <SelectField label="角色" value={filters.character} values={catalog.characters} searchable onChange={v => applyFilters({ ...filters, character: v })} />
+            <SelectField label="角色" value={filters.character} values={catalog.characters} searchable format={speakerName} onChange={v => applyFilters({ ...filters, character: v })} />
             {Object.values(filters).some(Boolean) && <button type="button" className="text-button clear-filters" onClick={() => applyFilters(emptyFilters)}>重置筛选</button>}
           </div>
         </div>
@@ -489,19 +517,19 @@ export default function App() {
           return <button className={`result-card ${selected?.line_id === result.line_id && selected?.script === result.script ? 'selected' : ''}`} key={`${result.chunk_id}:${result.line_id}:${index}`} onClick={() => void selectResult(result, response.snapshot)}>
           <div className="result-topline">
             <div className="result-badges">
-              {result.type && <span className={`mission-badge type-${result.type.toLowerCase()}`}>{labels[result.type] || result.type}</span>}
+              {result.type && <span className={`mission-badge type-${missionTypeClass(result.type)}`}>{labels[result.type] || result.type}</span>}
               <span className="world-badge">{result.world || '剧情对白'}</span>
               {result.kind?.includes('option') && <span className="option-badge">❖ 玩家选项</span>}
             </div>
             <span className={!result.version ? 'pending-version' : 'version-tag'}>{versionText(result.version, result.version_status)}</span>
           </div>
           <h3>{title}{result.chapter && result.chapter !== title && <small className="result-chapter"> · {result.chapter}</small>}</h3>
-          <p className="result-text"><strong>{result.kind?.includes("option") ? "❖ 开拓者选项" : speakerName(result.speaker)}</strong><span><Highlight text={result.text} query={searchedQuery} /></span></p>
+          <p className="result-text"><strong>{result.kind?.includes("option") ? "❖ 开拓者选项" : speakerName(result.speaker)}</strong><span><Highlight text={result.display_text || result.text} query={searchedQuery} /></span></p>
           <div className="result-bottom"><span>{matchLabel(result)}</span><span className="result-open">阅读上下文 <span>→</span></span></div>
         </button>; })}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
       </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>
     </section>
-    <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={clearReader} onVersionSave={saveVersion} onMore={() => void moreContext()} />
+    <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={clearReader} onVersionSave={saveVersion} onMore={() => void moreContext()} onEarlier={() => void moreContext(true)} />
     </main>
     {showModeHelp && <Modal title="搜索模式说明" close={() => setShowModeHelp(false)}>
       <div className="mode-help-modal">
@@ -536,7 +564,7 @@ export default function App() {
     {showVisitorKey && <Modal title="配置语义搜索密钥" close={() => setShowVisitorKey(false)}><VisitorKeyForm initialKey={visitorKey} initialEndpoint={visitorEndpoint} model={status.embedding.index_model || 'BAAI/bge-m3'} save={updateVisitorKey} clear={() => updateVisitorKey('', '')} /></Modal>}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}
     {showSettings && <Modal title="档案管理" close={() => setShowSettings(false)} wide><Suspense fallback={<p role="status">正在加载管理工具…</p>}><Admin status={status} onRefresh={() => refresh()} onToast={setToast} /></Suspense></Modal>}
-    {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setSearchedQuery(bookmark.query); setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{bookmark.result.text || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
+    {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setSearchedQuery(bookmark.query); setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{displayText(bookmark.result.display_text || bookmark.result.text) || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
     {toast && <div className="toast" role="status">{toast}</div>}
   </div>;
 }

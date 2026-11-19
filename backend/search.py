@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from rapidfuzz.distance import LCSseq
 from rapidfuzz.fuzz import partial_ratio
 
 from .data import normalize_text, open_db, search_tokens, version_sort_key
@@ -45,7 +46,7 @@ NON_SPEAKER_ENTITIES = {*SCENE_LOCATIONS, "开拓者", "星际和平公司", "�
 STOPWORD_PATTERN = re.compile(
     r"关于|为什么|怎么|什么|如何|哪里|哪个|时候|地方|告诉|讨论|争论|对话|剧情|故事|台词|"
     r"她的|他的|我的|你的|他们|她们|我们|你们|自己|可以|因为|所以|但是|然后|如果|或者|以及|还有|"
-    r"就是|不是|没有|一个|一些|这个|那个|这些|那些|[的了和与跟同在于是有把被向对给让叫去来到从往着过吗呢吧啊呀么]"
+    r"就是|不是|没有|一个|一些|这个|那个|这些|那些|用出|使出|[的了和与跟同在于是有把被向对给让叫去来到从往着过吗呢吧啊呀么]"
 )
 
 
@@ -71,6 +72,12 @@ def _extract_content_terms(query: str) -> list[str]:
 
 def _compact(text: str) -> str:
     return "".join(re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", text.lower()))
+
+
+def _scene_description(terms: list[str]) -> tuple[list[str], list[str]]:
+    actors = [term for term in terms if term in KNOWN_ENTITIES and term not in NON_SPEAKER_ENTITIES]
+    topics = [term for term in terms if term not in KNOWN_ENTITIES]
+    return actors, topics if len(actors) >= 2 and len(topics) >= 2 else []
 
 
 def semantic_context_bonus(content_terms: list[str], text: str, mission: dict, speakers: set[str]) -> float:
@@ -197,9 +204,11 @@ def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False, filter
         AND c.script!='unlinked' AND c.mission_id!='unlinked'""", ids).fetchall()
     results = []
     variants = expand_query(query) if query else [""]
+    content_by_variant = {variant: _extract_content_terms(variant) for variant in variants}
+    topics_by_variant = {variant: _scene_description(terms)[1] for variant, terms in content_by_variant.items()}
     for row in rows:
         item = dict(row)
-        lines = conn.execute("SELECT id,speaker,search_text,kind FROM lines WHERE chunk_id=? ORDER BY position", (item["chunk_id"],)).fetchall()
+        lines = conn.execute("SELECT id,sentence_id,speaker,text,search_text,kind FROM lines WHERE chunk_id=? ORDER BY position", (item["chunk_id"],)).fetchall()
         line_scores = []
         for idx, line in enumerate(lines):
             spk_ok = 1 if _speaker_matches_filter(line["speaker"], expanded_chars) else 0
@@ -212,20 +221,27 @@ def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False, filter
             line_text_lower = line["search_text"].lower()
             speaker_compact = _compact(line["speaker"])
             for variant in variants:
-                text_score = _score_fields(variant, {"text": line["search_text"]}, allow_fuzzy)[0]
-                full_score = _score_fields(variant, {"text": line["search_text"], "speaker": line["speaker"]}, allow_fuzzy)[0]
-                score = text_score if text_score > 0 else (full_score * 0.6 if substantive else full_score * 0.2)
+                score, match_type, _ = _score_line(variant, line["search_text"], allow_fuzzy)
+                exact_text = match_type == "exact"
+                if not score:
+                    full_score = _score_fields(variant, {"text": line["search_text"], "speaker": line["speaker"]}, allow_fuzzy)[0]
+                    score = full_score * (0.6 if substantive else 0.2)
                 words = re.findall(r"[\u3400-\u9fff]+|[a-z0-9]+", variant.lower())
-                content_terms = _extract_content_terms(variant)
+                content_terms = content_by_variant[variant]
+                topics = topics_by_variant[variant]
+                topic_line = bool(topics) and all(term in line_compact for term in topics)
                 coverage = sum(len(word) for word in words if word in line_text_lower or word in line_compact)
                 text_sub_cov = sum(len(term) for term in (content_terms or _subterms(variant)) if term in line_compact)
                 speaker_cov = sum(len(word) for word in words if word in speaker_compact) if substantive else 0
-                scores.append((spk_ok, score, coverage, text_sub_cov, substantive, speaker_cov, -idx))
+                scores.append((spk_ok, exact_text, topic_line, score, coverage, text_sub_cov, substantive, speaker_cov, -idx))
             line_scores.append(max(scores))
         match = lines[max(range(len(lines)), key=line_scores.__getitem__)] if lines else None
         item["line_id"] = match["id"] if match else ""
+        item["sentence_id"] = match["sentence_id"] if match else ""
         item["speaker"] = match["speaker"] if match else ""
         item["text"] = _snippet(match["search_text"] if match else item["text"], query)
+        if match and len(match["text"]) <= 350:
+            item["display_text"] = match["text"]
         item["kind"] = match["kind"] if match else "dialogue"
         if not query:
             item["matched_field"] = "speaker" if expanded_chars else "metadata"
@@ -294,7 +310,7 @@ def _score_fields(query: str, fields: dict[str, str], allow_fuzzy: bool = False)
                 best = (195.0, "keyword", "mission")
             else:
                 best = (150.0, "keyword", "metadata")
-    if best[0] == 0.0 and len(words) == 1 and len(words[0]) >= 5:
+    if (best[0] == 0.0 or best[1] == "fuzzy") and len(words) == 1 and len(words[0]) >= 5:
         content_terms = _extract_content_terms(words[0])
         if len(content_terms) >= 2:
             compact_fields = {k: _compact(normalize_text(v)) for k, v in fields.items()}
@@ -314,6 +330,23 @@ def _score_fields(query: str, fields: dict[str, str], allow_fuzzy: bool = False)
                 target_field = "text" if text_hits > 0 else ("speaker" if any(t in compact_fields.get("speaker", "") for t in matched_terms) else "mission")
                 best = (base, "keyword", target_field)
     return best
+
+
+def _score_line(query: str, text: str, allow_fuzzy: bool) -> tuple[float, str, str]:
+    match = _score_fields(query, {"text": text}, allow_fuzzy)
+    if not allow_fuzzy or (match[0] > 0 and match[1] != "fuzzy"):
+        return match
+    compact_query = _compact(query)
+    if not re.fullmatch(r"[\u3400-\u9fff]{8,}", compact_query):
+        return match
+    compact_text = _compact(text)
+    query_pairs = list(zip(compact_query, compact_query[1:]))
+    text_pairs = list(zip(compact_text, compact_text[1:]))
+    coverage = LCSseq.similarity(query_pairs, text_pairs) / len(query_pairs)
+    if coverage >= 0.6:
+        # Reward multiple fragments in order within one line over a short partial match.
+        return (195.0 + 30.0 * coverage, "fuzzy", "text")
+    return match
 
 
 def _relevance_tier(match_type: str, matched_field: str, score: float) -> int:
@@ -345,6 +378,7 @@ def lexical_search(path: Path | str, query: str, filters: dict | None = None, li
             ordered = [r[0] for r in rows]
             return _results(conn, ordered, "", False, filters)
     variants = expand_query(query)
+    descriptions = [_scene_description(_extract_content_terms(variant)) for variant in variants]
     expanded_chars = _expand_character_filter(filters)
     candidates: dict[int, tuple[float, str, str]] = {}
     versions_by_id: dict[int, tuple[int, int]] = {}
@@ -410,19 +444,35 @@ def lexical_search(path: Path | str, query: str, filters: dict | None = None, li
             body_text = row["body"] or ""
             fields = {"text": body_text, "speaker": row["speakers"] or "", "mission": row["name"], "metadata": row["world"] + " " + row["chapter"] + " " + (row["version"] or "")}
             score, match_type, matched_field = max((_score_fields(variant, fields, allow_fuzzy) for variant in variants), key=lambda value: value[0])
+            if not score and not allow_fuzzy:
+                continue
+            line_match = max(
+                (_score_line(variant, line, allow_fuzzy) for variant in variants for line in body_text.split("\n") if line),
+                key=lambda value: value[0], default=(0.0, "keyword", "text"),
+            )
+            if allow_fuzzy and line_match[0] > score:
+                score, match_type, matched_field = line_match
             if score > 0:
-                line_bonus = max((_score_fields(variant, {"text": line_str}, allow_fuzzy)[0] for variant in variants for line_str in body_text.split("\n") if line_str), default=0.0)
                 char_bonus = 0.0
                 if expanded_chars:
                     for raw_line in (row["text"] or "").split("\n"):
                         if "：" in raw_line:
                             spk, ltxt = raw_line.split("：", 1)
                             if _speaker_matches_filter(spk, expanded_chars):
-                                if max((_score_fields(variant, {"text": ltxt}, allow_fuzzy)[0] for variant in variants), default=0.0) > 0:
+                                if max((_score_line(variant, ltxt, allow_fuzzy)[0] for variant in variants), default=0.0) > 0:
                                     char_bonus = 35.0
                                     break
+                scene_bonus = 0.0
+                speakers = fields["speaker"].split(",")
+                for actors, topics in descriptions:
+                    if not topics or not all(any(speaker.startswith(actor) for speaker in speakers) for actor in actors):
+                        continue
+                    compact_lines = map(_compact, body_text.split("\n"))
+                    if any(all(term in line for term in topics) for line in compact_lines):
+                        scene_bonus = 12.0
+                        break
                 type_bonus = 1.5 if row["type"] and row["type"] != "其他任务" else 0.0
-                bonus = (4.0 if line_bonus >= 265.0 else 0.0) + char_bonus + type_bonus + min(3.9, max(0.0, -fts_ranks.get(row["id"], 0.0)) * 0.15)
+                bonus = (4.0 if line_match[0] >= 265.0 else 0.0) + char_bonus + scene_bonus + type_bonus + min(3.9, max(0.0, -fts_ranks.get(row["id"], 0.0)) * 0.15)
                 candidates[row["id"]] = (score + bonus, match_type, matched_field)
                 versions_by_id[row["id"]] = version_sort_key(row["version"])
         def _lex_sort_key(identifier: int) -> tuple:

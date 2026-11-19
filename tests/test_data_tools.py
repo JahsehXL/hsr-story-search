@@ -111,6 +111,25 @@ def test_diagnostics_detect_broken_links_without_writing(source, tmp_path):
     assert not missing.exists()
 
 
+def test_comparison_reports_missing_sentences_and_task_reassignments(source, tmp_path):
+    baseline = tmp_path / "baseline.db"
+    write_json(source, "Story/Mission/1/intro.json", {"OnStartSequece": [{"TaskList": [
+        {"$type": "RPG.GameCore.PlaySimpleTalk", "SimpleTalkList": [{"TalkSentenceID": 10}, {"TalkSentenceID": 11}]}]}]})
+    write_json(source, "ExcelOutput/TalkSentenceConfig.json", [
+        {"TalkSentenceID": sid, "TalkSentenceText": {"Hash": 2}} for sid in (10, 11)])
+    import_data(source, baseline)
+    (source / "Story/Mission/1/intro.json").unlink()
+    write_json(source, "Story/Mission/2/intro.json", {"OnStartSequece": [{"TaskList": [
+        {"$type": "RPG.GameCore.PlaySimpleTalk", "SimpleTalkList": [{"TalkSentenceID": 10}]}]}]})
+    candidate = tmp_path / "candidate.db"
+    import_data(source, candidate)
+
+    result = compare_databases(baseline, candidate)
+    assert result["missing_sentence_ids"] == 1
+    assert result["missing_sentences_by_mission"] == [{"mission_id": "1", "name": "任务", "version": "", "sentences": 1}]
+    assert result["sentence_mission_changes"] == [{"old_mission_id": "1", "new_mission_id": "2", "sentences": 1}]
+
+
 def test_metadata_repair_uses_new_copy_and_preserves_original(source, tmp_path):
     original, candidate = tmp_path / "original.db", tmp_path / "repaired.db"
     import_data(source, original)

@@ -1,8 +1,18 @@
 import type { ReactNode } from 'react';
 
-export function speakerName(value: string) { return !value || value.includes('{NICKNAME}') || value === 'PlayerName' ? '开拓者' : value; }
+const gameTag = /<\/?(?:color|size|b|i|u|s|align|alpha|voffset|font|material|link|noparse|unbreak|unbreakable)(?=[\s=>])[^>]*>/gi;
+const dynamicText = /\{TEXTJOIN#\d+\}/g;
+
+export function speakerName(value: string) {
+  if (!value || value.includes('{NICKNAME}') || value === 'PlayerName') return '开拓者';
+  return value.replace(dynamicText, '〔动态称呼〕');
+}
+export function missionTypeClass(value: string) {
+  const classes: Record<string, string> = { 开拓任务: 'main', 支线任务: 'branch', 同行任务: 'companion', 每日任务: 'daily', 开拓续闻: 'gap' };
+  return classes[value] || value.toLowerCase();
+}
 export function cleanMissionName(name?: string, chapter?: string, world?: string) {
-  const cleaned = (name || '').replace(/<[^>]*>/g, '').replace(/^任务\s*\d+$/i, '').trim();
+  const cleaned = displayText(name || '').replace(/^任务\s*\d+$/i, '').trim();
   if (cleaned) return cleaned;
   if (chapter && !/^任务\s*\d+$/i.test(chapter.trim())) return chapter.trim();
   if (world) return `${world} · 场景探索对话`;
@@ -10,7 +20,14 @@ export function cleanMissionName(name?: string, chapter?: string, world?: string
 }
 export function displayText(value: string) {
   return value.replace(/\{RUBY_B#([^}]*)\}([\s\S]*?)\{RUBY_E#\}/g, '$2（$1）')
-    .replace(/<[^>]*>/g, '').replace(/\{(?:F|M)#([^}]*)\}/g, '$1')
+    .replace(gameTag, '').replace(/<icon\b[^>]*>/gi, '〔图标〕')
+    .replace(/\{([FM])#([^}]*)\}\s*\{([FM])#([^}]*)\}/g, (original, first, a, second, b) => {
+      if (first === second) return original;
+      if (a === b) return a;
+      return `〔${first === 'M' ? '穹' : '星'}〕${a} / 〔${second === 'M' ? '穹' : '星'}〕${b}`;
+    })
+    .replace(/\{([FM])#([^}]*)\}/g, (_, gender, text) => `〔${gender === 'M' ? '穹' : '星'}〕${text}`)
+    .replace(dynamicText, '〔游戏内代入文本〕')
     .replaceAll('{NICKNAME}', '开拓者').replaceAll('\\n', '\n');
 }
 export function errorText(error: unknown) { return error instanceof Error ? error.message : '操作未完成，请稍后重试'; }

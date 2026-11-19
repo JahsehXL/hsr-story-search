@@ -441,6 +441,54 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
   letter-spacing: 0.4px;
 }
 
+.alt-branch-segment {
+  margin: 8px 0 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.alt-branch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px dashed var(--line);
+}
+.alt-branch-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.alt-branch-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.alt-branch-tab {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--reader);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 140ms, background 140ms, color 140ms;
+}
+.alt-branch-tab:hover {
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+.alt-branch-tab.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .story-alternatives { border-top: 1px solid var(--line-soft); padding: 16px 0 0; margin-top: 24px; }
 .story-alternatives > summary { cursor: pointer; color: var(--muted); font-size: 13px; font-weight: 500; line-height: 1.8; }
 .story-alternatives > summary > span { margin-left: 10px; color: var(--subtle); font-size: 12px; font-weight: 400; }

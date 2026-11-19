@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import sqlite_vec
 
-from .data import IMPORTER_VERSION, import_data, open_db, read_records, source_root, source_scripts
+from .data import IMPORTER_VERSION, MISSION_TRIGGER_PATTERN, import_data, open_db, read_records, source_root, source_scripts
 from .settings import embedding_signature
 from .version_metadata import apply_versions, load_metadata
 
@@ -83,8 +83,12 @@ def inspect_source(source: Path | str) -> dict:
         raise ValueError("中文文字、任务表和台词表均需要非空记录")
     task_types: dict[str, int] = {}
     timeline_scripts = 0
+    empty_scripts = 0
     for path in scripts:
         value = json.loads(path.read_text(encoding="utf-8-sig"))
+        if value == {} or (path.match(MISSION_TRIGGER_PATTERN) and value == {"Type": "Mission"}):
+            empty_scripts += 1
+            continue
         if not isinstance(value, dict) or not isinstance(value.get("OnStartSequece"), list):
             raise ValueError(f"剧情脚本缺少 OnStartSequece 数组：{path.relative_to(root).as_posix()}")
         types = [str(task.get("$type", "")).rsplit(".", 1)[-1]
@@ -92,7 +96,7 @@ def inspect_source(source: Path | str) -> dict:
         timeline_scripts += "PlayTimeline" in types
         for task_type in types:
             task_types[task_type] = task_types.get(task_type, 0) + 1
-    inputs = sorted(set(textmaps + list((root / "ExcelOutput").glob("*.json")) + scripts))
+    inputs = sorted(set(textmaps + list((root / "ExcelOutput").glob("*.json")) + scripts + list(root.glob(MISSION_TRIGGER_PATTERN))))
     digest = hashlib.sha256()
     for path in inputs:
         digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
@@ -101,8 +105,11 @@ def inspect_source(source: Path | str) -> dict:
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 file_hash.update(block)
         digest.update(file_hash.digest())
+    if empty_scripts == len(scripts):
+        raise ValueError("剧情脚本全部为空")
     return {"source": str(root), "textmap_entries": len(texts), "missions": len(missions),
             "sentence_records": len(sentences), "scripts": len(scripts),
+            "empty_scripts": empty_scripts,
             "timeline_scripts": timeline_scripts, "task_types": dict(sorted(task_types.items())),
             "input_files": len(inputs), "input_sha256": digest.hexdigest(), "importer_version": IMPORTER_VERSION}
 
@@ -216,9 +223,33 @@ def compare_databases(baseline: Path | str, candidate: Path | str) -> dict:
             "added_lines": "SELECT count(*) FROM lines l WHERE NOT EXISTS(SELECT 1 FROM baseline.lines b WHERE b.id=l.id)",
             "removed_lines": "SELECT count(*) FROM baseline.lines b WHERE NOT EXISTS(SELECT 1 FROM lines l WHERE l.id=b.id)",
             "changed_lines": "SELECT count(*) FROM lines l JOIN baseline.lines b ON l.id=b.id WHERE l.text!=b.text OR l.speaker!=b.speaker OR l.mission_id!=b.mission_id OR l.branch!=b.branch",
+            "missing_sentence_ids": """SELECT count(DISTINCT b.sentence_id) FROM baseline.lines b
+                WHERE b.sentence_id<>'' AND b.mission_id<>'unlinked'
+                AND NOT EXISTS(SELECT 1 FROM lines l WHERE l.sentence_id=b.sentence_id)""",
             "reusable_chunks": "SELECT count(*) FROM chunks c WHERE EXISTS(SELECT 1 FROM baseline.chunks b WHERE b.content_hash=c.content_hash)",
         }.items():
             result[name] = connection.execute(sql).fetchone()[0]
+        result["missing_sentences_by_mission"] = [dict(row) for row in connection.execute("""
+            SELECT b.mission_id, m.name, m.version, count(DISTINCT b.sentence_id) AS sentences
+            FROM baseline.lines b JOIN baseline.missions m ON m.id=b.mission_id
+            WHERE b.sentence_id<>'' AND b.mission_id<>'unlinked'
+            AND NOT EXISTS(SELECT 1 FROM lines l WHERE l.sentence_id=b.sentence_id)
+            GROUP BY b.mission_id ORDER BY sentences DESC, b.mission_id
+        """)]
+        result["sentence_mission_changes"] = [dict(row) for row in connection.execute("""
+            WITH previous AS (
+                SELECT sentence_id,min(mission_id) AS mission_id
+                FROM baseline.lines WHERE sentence_id<>'' AND mission_id<>'unlinked'
+                GROUP BY sentence_id HAVING min(mission_id)=max(mission_id)
+            ), current AS (
+                SELECT sentence_id,min(mission_id) AS mission_id
+                FROM lines WHERE sentence_id<>'' AND mission_id<>'unlinked'
+                GROUP BY sentence_id HAVING min(mission_id)=max(mission_id)
+            )
+            SELECT previous.mission_id AS old_mission_id,current.mission_id AS new_mission_id,count(*) AS sentences
+            FROM previous JOIN current USING(sentence_id) WHERE previous.mission_id<>current.mission_id
+            GROUP BY 1,2 ORDER BY sentences DESC,1,2
+        """)]
         result["new_or_changed_chunks"] = after["counts"]["chunks"] - result["reusable_chunks"]
     return result
 
@@ -227,7 +258,7 @@ def build_candidate(source: Path | str, output: Path | str, provenance: dict,
                     baseline: Path | str | None = None, progress=None) -> dict:
     normalized = normalize_provenance(provenance)
     report = inspect_source(source)
-    import_data(Path(report["source"]), Path(output), progress)
+    import_data(Path(report["source"]), Path(output), progress, baseline=Path(baseline) if baseline else None)
     stamp_provenance(output, normalized, report)
     result = {"source": report, "audit": audit_database(output)}
     if baseline:

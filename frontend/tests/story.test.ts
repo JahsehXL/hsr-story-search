@@ -214,3 +214,170 @@ test('resolveFullMissionStory renders all root scenes across scripts and selects
   assert.deepEqual(switched.groups.map(g => g.lines[0].id), ['s1-root', 's2-root', 's2-b1', 's3-root']);
 });
 
+test('a setup node without lines keeps the scene and shared answers in script order', () => {
+  const lines = [
+    line('intro', 1, 'intro'),
+    line('answer-a', 2, 'choice', { kind: 'option', trigger: 'shared' }),
+    line('answer-b', 2, 'choice', { kind: 'option', trigger: 'shared' }),
+    line('hit', 3, 'shared'),
+    line('next-scene', 0, '', { script: 'script-b' }),
+  ];
+  const model = buildStoryModel(lines, [
+    { script: 'script-a', source: 'sequence:0', target: 'intro', kind: 'continuation' },
+    { script: 'script-a', source: 'intro', target: 'choice', kind: 'continuation' },
+  ]);
+  for (const answer of ['answer-a', 'answer-b']) {
+    const resolved = resolveFullMissionStory(model, 'hit', { 'answer-a': answer });
+    assert.deepEqual(resolved.groups.map(group => group.lines[0].id), ['intro', 'answer-a', 'hit', 'next-scene']);
+  }
+});
+
+test('a dialogue loop entered through setup remains visible when switching answers', () => {
+  const model = buildStoryModel([
+    line('option-a', 1, 'hub', { kind: 'option', trigger: 'first' }),
+    line('option-b', 1, 'hub', { kind: 'option', trigger: 'second' }),
+    line('response-a', 2, 'first'),
+    line('response-b', 3, 'second'),
+    line('next-scene', 0, '', { script: 'script-b' }),
+  ], [
+    { script: 'script-a', source: 'sequence:0', target: 'setup', kind: 'continuation' },
+    { script: 'script-a', source: 'setup', target: 'hub', kind: 'continuation' },
+    { script: 'script-a', source: 'first', target: 'hub', kind: 'continuation' },
+    { script: 'script-a', source: 'second', target: 'hub', kind: 'continuation' },
+  ]);
+  const opened = resolveFullMissionStory(model, 'option-a');
+  const switched = resolveFullMissionStory(model, 'option-a', { 'option-a': 'option-b' });
+  assert.deepEqual(opened.groups.map(group => group.lines[0].id), ['option-a', 'response-a', 'next-scene']);
+  assert.deepEqual(switched.groups.map(group => group.lines[0].id), ['option-a', 'response-b', 'next-scene']);
+});
+
+test('only the chosen path renders in a script consisting of a closed question loop', () => {
+  const model = buildStoryModel([
+    line('option-a', 1, 'hub', { kind: 'option', trigger: 'first' }),
+    line('option-b', 1, 'hub', { kind: 'option', trigger: 'second' }),
+    line('response-a', 2, 'first'),
+    line('response-b', 3, 'second'),
+    line('outside', 0, '', { script: 'script-b' }),
+  ], [
+    { script: 'script-a', source: 'first', target: 'hub', kind: 'continuation' },
+    { script: 'script-a', source: 'second', target: 'hub', kind: 'continuation' },
+  ]);
+  const switched = resolveFullMissionStory(model, '', { 'option-a': 'option-b' });
+  assert.deepEqual(switched.groups.map(group => group.lines[0].id), ['option-a', 'response-b', 'outside']);
+});
+
+test('a separate question loop stays visible after an earlier scene in the same script', () => {
+  const model = buildStoryModel([
+    line('setup', 0, ''),
+    line('option-a', 1, 'hub', { kind: 'option', trigger: 'first' }),
+    line('option-b', 1, 'hub', { kind: 'option', trigger: 'second' }),
+    line('response-a', 2, 'first'),
+    line('response-b', 3, 'second'),
+  ], [
+    { script: 'script-a', source: 'first', target: 'hub', kind: 'continuation' },
+    { script: 'script-a', source: 'second', target: 'hub', kind: 'continuation' },
+  ]);
+  assert.deepEqual(resolveFullMissionStory(model).groups.map(group => group.lines[0].id), ['setup', 'option-a', 'response-a']);
+  const switched = resolveFullMissionStory(model, '', { 'option-a': 'option-b' });
+  assert.deepEqual(switched.groups.map(group => group.lines[0].id), ['setup', 'option-a', 'response-b']);
+});
+
+test('a question reached through a silent randomizer keeps its options and responses', () => {
+  const model = buildStoryModel([
+    line('intro', 0, ''),
+    line('agree', 0, '', { kind: 'option', trigger: 'relay-a' }),
+    line('decline', 0, '', { kind: 'option', trigger: 'declined' }),
+    line('question', 2, 'question'),
+    line('exit', 3, 'declined'),
+  ], [
+    { script: 'script-a', source: 'relay-a', target: 'relay-b', kind: 'continuation' },
+    { script: 'script-a', source: 'relay-b', target: 'relay-a', kind: 'continuation' },
+    { script: 'script-a', source: 'relay-b', target: 'question', kind: 'continuation' },
+  ]);
+  const opened = resolveFullMissionStory(model, 'question');
+  assert.deepEqual(opened.groups.map(group => group.lines[0].id), ['intro', 'question']);
+  const switched = resolveFullMissionStory(model, 'question', { agree: 'decline' });
+  assert.deepEqual(switched.groups.map(group => group.lines[0].id), ['intro', 'exit']);
+});
+
+test('a setup sequence numbered later in the file starts at the question before its answers', () => {
+  const model = buildStoryModel([
+    line('correct', 1, 'success'),
+    line('retry', 2, 'wrong'),
+    line('option-a', 6, 'question', { kind: 'option', trigger: 'success' }),
+    line('option-b', 6, 'question', { kind: 'option', trigger: 'wrong' }),
+  ], [
+    { script: 'script-a', source: 'sequence:5', target: 'question', kind: 'continuation' },
+    { script: 'script-a', source: 'wrong', target: 'question', kind: 'continuation' },
+  ]);
+  assert.deepEqual(resolveFullMissionStory(model).groups.map(group => group.lines[0].id), ['option-a', 'correct']);
+  assert.deepEqual(resolveFullMissionStory(model, '', { 'option-a': 'option-b' }).groups.map(group => group.lines[0].id), ['option-a', 'retry']);
+});
+
+test('mutually exclusive alt branches default to branch 1, auto-focus hits on branch 2, and support switching', () => {
+  const model = buildStoryModel([
+    line('cond-1', 3, 'seq3#alt:1#cond:1', { position: 10000 }),
+    line('cond-2', 3, 'seq3#alt:1#cond:2', { position: 10100 }),
+  ], [
+    { script: 'script-a', source: 'sequence:3', target: 'seq3#alt:1#cond:1', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:3', target: 'seq3#alt:1#cond:2', kind: 'continuation' },
+  ]);
+  const defaultView = resolveFullMissionStory(model);
+  assert.deepEqual(defaultView.groups.map(group => group.lines[0].id), ['cond-1']);
+  assert.equal(model.altGroups.size, 1);
+
+  const hitSecond = resolveFullMissionStory(model, 'cond-2');
+  assert.deepEqual(hitSecond.groups.map(group => group.lines[0].id), ['cond-2']);
+
+  const slot = defaultView.groups[0].altSlot!;
+  const secondKey = model.altGroups.get(slot)![1].key;
+  const switched = resolveFullMissionStory(model, '', {}, { [slot]: secondKey });
+  assert.deepEqual(switched.groups.map(group => group.lines[0].id), ['cond-2']);
+});
+
+test('a sequence interrupted by an alt block preserves before, chosen alt, after, and continuation order', () => {
+  const model = buildStoryModel([
+    line('start', 0, '', { position: 0 }),
+    line('before', 1, 'hub', { position: 0 }),
+    line('alt-1', 1, 'hub#alt:1#cond:1', { position: 10000 }),
+    line('alt-2', 1, 'hub#alt:1#cond:2', { position: 10100 }),
+    line('after', 1, 'hub', { position: 20000 }),
+    line('next-scene', 2, 'ending', { position: 0 }),
+  ], [
+    { script: 'script-a', source: 'sequence:0', target: 'hub', kind: 'continuation' },
+    { script: 'script-a', source: 'hub', target: 'hub#alt:1#cond:1', kind: 'continuation' },
+    { script: 'script-a', source: 'hub', target: 'hub#alt:1#cond:2', kind: 'continuation' },
+    { script: 'script-a', source: 'hub', target: 'ending', kind: 'continuation' },
+  ]);
+  const def = resolveFullMissionStory(model);
+  assert.deepEqual(def.groups.map(group => group.lines[0].id), ['start', 'before', 'alt-1', 'after', 'next-scene']);
+  const hitAlt2 = resolveFullMissionStory(model, 'alt-2');
+  assert.deepEqual(hitAlt2.groups.map(group => group.lines[0].id), ['start', 'before', 'alt-2', 'after', 'next-scene']);
+});
+
+test('hitting a downstream line triggered from an option inside an alt branch auto-selects both the alt branch and option', () => {
+  const model = buildStoryModel([
+    line('cond-1', 0, 'sequence:0#alt:0#cond:1', { position: 0 }),
+    line('alt-opt-1', 0, 'sequence:0#alt:0#cond:2', { position: 100, kind: 'option', trigger: 'reply-a' }),
+    line('alt-opt-2', 0, 'sequence:0#alt:0#cond:2', { position: 101, kind: 'option', trigger: 'reply-b' }),
+    line('reply-a', 1, 'reply-a', { position: 0 }),
+    line('reply-b', 2, 'reply-b', { position: 0 }),
+  ], [
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:0#cond:1', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:0#cond:2', kind: 'continuation' },
+    { script: 'script-a', source: 'reply-b', target: 'deep-b', kind: 'continuation' },
+  ]);
+  const hitDeep = resolveFullMissionStory(model, 'reply-b');
+  assert.deepEqual(hitDeep.groups.map(group => group.lines[0].id), ['alt-opt-1', 'reply-b']);
+  assert.equal(hitDeep.selections['alt-opt-1'], 'alt-opt-2');
+});
+
+test('adjacent option tasks inside a container with 100-stride positions form separate choice cards', () => {
+  const model = buildStoryModel([
+    line('c1-a', 0, 'start', { kind: 'option', position: 10000, trigger: 'a' }),
+    line('c1-b', 0, 'start', { kind: 'option', position: 10001, trigger: 'b' }),
+    line('c2-a', 0, 'start', { kind: 'option', position: 10100, trigger: 'c' }),
+  ]);
+  assert.equal(model.groups[0].segments.length, 2);
+});
+

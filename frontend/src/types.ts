@@ -23,6 +23,7 @@ export interface Result {
   version_status: string;
   speaker: string;
   text: string;
+  display_text?: string;
   line_id: string;
   script: string;
   branch: string;
@@ -51,6 +52,7 @@ export interface Mission {
   version_status: string;
 }
 export interface DialogueLine {
+  scene_label?: string;
   id: string;
   mission_id: string;
   script: string;
@@ -65,6 +67,7 @@ export interface DialogueLine {
 }
 export interface MissionResponse {
   mission: Mission;
+  anchor_line_id?: string | null;
   lines: DialogueLine[];
   edges: { script: string; source: string; target: string; kind: string }[];
   recalls?: { name?: string; title?: string; path?: string; description?: string; verified?: boolean | number }[];

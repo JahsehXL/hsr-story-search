@@ -355,7 +355,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             visitor_key = visitor_key.strip()
             if payload.query_vector is not None:
                 runtime.validate_query_vector(path, payload.query_vector)
-            from .data import version_sort_key
+            from .data import performance_script_id, version_sort_key
             from .search import lexical_search
             lexical = lexical_search(path, query, payload.filters, limit=500, allow_fuzzy=payload.mode == "fuzzy")
             semantic = []
@@ -408,17 +408,22 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                 raw_ordered = sorted(candidates.values(), key=_hybrid_key, reverse=True)
                 for item in raw_ordered:
                     item["score"] = round(scores[item["chunk_id"]], 6)
-            if len(raw_ordered) > 5:
-                ordered = []
-                seen_dedup = set()
-                for item in raw_ordered:
+            ordered = []
+            seen_dedup = set()
+            script_copies = {}
+            for item in raw_ordered:
+                script = item.get("script", "")
+                performance = performance_script_id(script)
+                if performance and item.get("sentence_id"):
+                    key = (item["mission_id"], performance, item["sentence_id"])
+                    if script_copies.setdefault(key, script) != script:
+                        continue
+                if len(raw_ordered) > 5:
                     dedup_key = (item.get("mission_id"), item.get("speaker"), item.get("text"))
                     if dedup_key in seen_dedup:
                         continue
                     seen_dedup.add(dedup_key)
-                    ordered.append(item)
-            else:
-                ordered = raw_ordered
+                ordered.append(item)
             return {"results": ordered[payload.offset:payload.offset + payload.limit], "total": len(ordered), "truncated": len(lexical) >= 500 or len(semantic) >= 500, "search_mode": search_mode, "notice": notice, "elapsed_ms": round((time.monotonic() - start) * 1000), "snapshot": snapshot}
         finally:
             search_slots.release()

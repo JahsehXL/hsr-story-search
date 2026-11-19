@@ -108,6 +108,19 @@ def test_client_query_vector_precedes_keys_and_requires_no_admin_key(public_app)
         assert runtime.query_cache == {}
 
 
+def test_short_search_list_collapses_mirrored_performance_scripts(public_app):
+    hit = {"chunk_id": 1, "mission_id": "1020201", "sentence_id": "202110107",
+           "script": "Config/Level/Mission/1020201/Act/Act102020117.json", "line_id": "act-line"}
+    mirror = {**hit, "chunk_id": 2, "script": "Story/Mission/1020201/Story102020117.json", "line_id": "story-line"}
+    other_performance = {**hit, "chunk_id": 3, "script": "Story/Mission/1020201/Story102020118.json",
+                         "line_id": "other-line"}
+    with TestClient(public_app, base_url="https://story.example") as client, \
+            patch("backend.search.lexical_search", return_value=[hit, mirror, other_performance]):
+        response = client.post("/api/v1/search", json={"query": "恐怖片", "mode": "fuzzy"})
+        assert response.status_code == 200
+        assert [result["line_id"] for result in response.json()["results"]] == ["act-line", "other-line"]
+
+
 @pytest.mark.parametrize("vector", [[1., 0.], [0., 0., 0.], [float("nan"), 0., 1.], [float("inf"), 0., 1.], [-float("inf"), 0., 1.]])
 def test_invalid_query_vectors_are_rejected_without_fallback(public_app, vector):
     with TestClient(public_app, base_url="https://story.example") as client, patch("backend.runtime.embed") as embedding:
