@@ -325,9 +325,12 @@ function FeedbackModal({
       <strong>目前反馈存储空间已满</strong>
       <p>请稍后再试，或前往 <a href="https://github.com/JahsehXL/hsr-story-search/issues" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> / <a href="https://jahsehxx.dpdns.org/blog/" target="_blank" rel="noreferrer">个人博客 ↗</a> 联系作者处理。</p>
     </div>}
-    <p className="feedback-intro">发现剧情遗漏、顺序错乱，或者有任何建议与想说的话，都可以在这里直接发送。支持选择或直接粘贴截图（附件总大小不超过 5 MB，同一 IP 每小时最多提交 5 次）。</p>
+    <div className="feedback-intro">
+      <p>发现剧情遗漏、顺序错乱，或者有任何建议与想说的话，都可以在这里直接发送，支持选择或直接粘贴截图。</p>
+      <p>如果方便，也可以在正文结尾留下你的称呼或联系方式；也可以去抖音私信 / 评论，或者前往 <a href="https://github.com/JahsehXL/hsr-story-search/issues" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> 反馈。</p>
+    </div>
     <div className="field">
-      <span>反馈类型</span>
+      <span className="feedback-field-title">反馈类型</span>
       <div className="feedback-category-pills" role="radiogroup" aria-label="反馈类型">
         {feedbackCategories.map(item => <button
           key={item.id}
@@ -340,12 +343,12 @@ function FeedbackModal({
       </div>
     </div>
     <label className="field">
-      <span>反馈内容 <small>{content.length} / 4000</small></span>
+      <span className="feedback-field-title">反馈内容 <small>{content.length} / 4000</small></span>
       <textarea
         rows={5}
         value={content}
         onChange={e => setContent(e.target.value)}
-        placeholder="请描述遇到的问题、遗漏的剧情任务或想对作者说的话（可直接 Ctrl+V 粘贴截图）…"
+        placeholder="请描述遇到的问题、遗漏的剧情任务或想对作者说的话（可直接 Ctrl+V 粘贴截图，方便的话可在结尾留下称呼或联系方式）…"
         maxLength={4000}
         required
         disabled={isFull || submitting}
@@ -362,7 +365,7 @@ function FeedbackModal({
         <strong>附带当前查看的剧情上下文</strong>
         <span>
           {[
-            context.mission_name ? `${context.mission_name}（${context.mission_id}）` : context.mission_id,
+            context.mission_name && context.mission_id ? `${context.mission_name}（${context.mission_id}）` : (context.mission_name || context.mission_id),
             context.speaker && context.text ? `${speakerName(context.speaker)}：${displayText(context.text).slice(0, 48)}` : '',
             context.query ? `搜索词：「${context.query}」` : '',
           ].filter(Boolean).join(' · ')}
@@ -370,9 +373,9 @@ function FeedbackModal({
       </div>
     </label>}
     <div className="field">
-      <span>附带图片（可选，最多 {MAX_FEEDBACK_FILES} 张，总大小 ≤ 5 MB） <small>已选 {formatBytes(totalBytes)} / 5.00 MB</small></span>
+      <span className="feedback-field-title">附带图片 <small>{files.length > 0 ? `已选 ${files.length} 张 · ${formatBytes(totalBytes)}` : '可选，支持粘贴或选择截图'}</small></span>
       <div className="feedback-upload-row">
-        <label className={`file-input feedback-file-label ${isFull || submitting || files.length >= MAX_FEEDBACK_FILES ? 'disabled' : ''}`}>
+        <label className={`feedback-dropzone ${isFull || submitting || files.length >= MAX_FEEDBACK_FILES ? 'disabled' : ''}`}>
           <input
             type="file"
             accept="image/png,image/jpeg,image/webp,image/gif"
@@ -383,7 +386,9 @@ function FeedbackModal({
               e.target.value = '';
             }}
           />
-          <span>+ 选择图片或直接粘贴截图（PNG / JPG / WebP / GIF）</span>
+          <span className="feedback-dropzone-icon" aria-hidden="true">🖼</span>
+          <span className="feedback-dropzone-text">点击选择图片，或直接按 Ctrl + V 粘贴截图</span>
+          <small className="feedback-dropzone-hint">支持 PNG / JPG / WebP / GIF</small>
         </label>
       </div>
       {files.length > 0 && <div className="feedback-attachment-list">
@@ -780,7 +785,7 @@ export default function App() {
         full={Boolean(status.feedback?.full)}
         context={(selected || searchedQuery) ? {
           mission_id: detail?.mission?.id || selected?.mission_id || '',
-          mission_name: cleanMissionName(detail?.mission?.name || selected?.mission_name, detail?.mission?.chapter || selected?.chapter, detail?.mission?.world || selected?.world),
+          mission_name: (detail?.mission?.name || selected?.mission_name) ? cleanMissionName(detail?.mission?.name || selected?.mission_name, detail?.mission?.chapter || selected?.chapter, detail?.mission?.world || selected?.world) : '',
           chapter: detail?.mission?.chapter || selected?.chapter || '',
           world: detail?.mission?.world || selected?.world || '',
           version: detail?.mission?.version || selected?.version || '',
