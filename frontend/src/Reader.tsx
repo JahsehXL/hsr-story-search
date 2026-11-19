@@ -26,6 +26,15 @@ interface ReaderProps {
 const missionTypes: Record<string, string> = { Main: '开拓任务', Branch: '冒险任务', Companion: '同行任务', Daily: '日常任务', Interlude: '开拓续闻', Gap: '开拓续闻' };
 const emptySelections: Record<string, string> = {};
 
+function scriptDisplayName(script: string): string {
+  const withoutTimeline = script.split('::timeline-')[0];
+  const fileName = withoutTimeline.split('/').pop()?.replace(/\.json$/, '') || script;
+  if (script.startsWith('Recovered/')) return `补录段落 ${fileName}`;
+  if (script.startsWith('Story/BattlePerformance/')) return `战斗演出 ${fileName}`;
+  if (script.includes('::timeline-')) return `${fileName}（过场对白）`;
+  return fileName;
+}
+
 function Dialogue({ line, query, hit, onShare }: { line: DialogueLine; query: string; hit: boolean; onShare: (line: DialogueLine) => void }) {
   const name = speakerName(line.speaker);
   const isPlayer = name === '开拓者';
@@ -250,6 +259,8 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
             const isBranchFollowup = Boolean(group.branch && selectedTriggers.has(JSON.stringify([group.script, group.branch])));
             const altSiblings = group.altSlot ? model.altGroups.get(group.altSlot) : undefined;
             const startsScene = groups[groupIndex - 1]?.script !== group.script;
+            const endsScene = groups[groupIndex + 1]?.script !== group.script;
+            const sceneName = scriptDisplayName(group.script);
             const sceneLabel = group.lines[0]?.scene_label || (
               group.script.startsWith('Story/BattlePerformance/') ? '战斗对白'
                 : group.script.startsWith('Recovered/') ? '补录对白 · 场景位置待核实' : ''
@@ -287,6 +298,16 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
                   </div> : <ChoiceCard choice={segment.choice} selectedId={resolved.selections[segment.choice.id]} hitId={hitId} query={query} onChoose={line => choose(segment.choice, line)} onShare={onShare} />}
                 </StoryBlock>;
               })}
+              {endsScene && (
+                <div className="scene-end-divider" role="separator" aria-label={`演出脚本结束：${sceneName}`}>
+                  <span className="scene-end-line" aria-hidden="true" />
+                  <span className="scene-end-badge">
+                    演出脚本结束 · <code>{sceneName}</code>
+                    {groupIndex < groups.length - 1 ? ' · 以下为下一段独立脚本（跨脚本顺序以游戏内为准）' : ''}
+                  </span>
+                  <span className="scene-end-line" aria-hidden="true" />
+                </div>
+              )}
             </div>;
           })}
         </div>
