@@ -302,6 +302,10 @@ test('scene labels and trailing extra divider avoid clutter across storyline scr
 
   assert.equal(shouldShowTrailingExtraDivider(undefined, 'Recovered/Mission/1054706/1570635.json', ordered), false);
   assert.equal(shouldShowTrailingExtraDivider('DS105470630.json', 'Recovered/Mission/1054706/1570628.json', ordered), false);
+  const optional = new Set(['Recovered/Mission/1054706/1570628.json', 'Optional.json']);
+  assert.equal(shouldShowTrailingExtraDivider('DS105470642.json', 'Optional.json', ordered, optional), true);
+  assert.equal(shouldShowTrailingExtraDivider('Optional.json', 'Recovered/Mission/1054706/1570628.json', ordered, optional), false);
+  assert.equal(shouldShowTrailingExtraDivider(undefined, 'Optional.json', ordered, optional), true);
   assert.equal(
     shouldShowTrailingExtraDivider('Recovered/Mission/1054706/1570628.json', 'Recovered/Mission/1054706/1570635.json', ordered),
     true,

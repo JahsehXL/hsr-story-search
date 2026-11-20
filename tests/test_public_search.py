@@ -39,6 +39,10 @@ def test_public_readonly_private_and_local_access_modes(public_app, tmp_path, mo
         assert (status["embedding"]["index_ready"], status["embedding"]["server_key_ready"], status["embedding"]["ready"]) == (True, False, False)
         assert client.get("/api/v1/catalog").status_code == 200
         assert client.get("/api/v1/missions/1").status_code == 200
+        assert client.get("/api/v1/missions/missing").status_code == 404
+        unanchored = client.get("/api/v1/missions/1", params={"line_id": "old-line"})
+        assert unanchored.status_code == 200 and unanchored.json()["lines"]
+        assert unanchored.json()["anchor_missing"] and unanchored.json()["anchor_line_id"] is None
         assert client.post("/api/v1/search", json={"query": "列车", "mode": "text"}).status_code == 200
         for route in ("settings", "jobs", "diagnostics", "package"):
             assert client.get("/api/v1/admin/" + route).status_code == 401

@@ -449,7 +449,10 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         if not path:
             raise ValueError("请先导入剧情数据")
         from .data import get_mission
-        result = get_mission(path, identifier, line_id=line_id, script=script, offset=max(0, offset), limit=max(1, min(limit, 1000)))
+        try:
+            result = get_mission(path, identifier, line_id=line_id, script=script, offset=max(0, offset), limit=max(1, min(limit, 1000)))
+        except KeyError as exc:
+            raise HTTPException(404, "此数据快照中没有找到该任务") from exc
         result["snapshot"] = snapshot
         return result
 

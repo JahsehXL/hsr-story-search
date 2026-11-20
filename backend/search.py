@@ -291,7 +291,9 @@ def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False, filter
                 coverage = sum(len(word) for word in words if word in line_text_lower or word in line_compact)
                 text_sub_cov = sum(len(term) * _term_match_score(term, line_compact) for term in (content_terms or _subterms(variant)))
                 speaker_cov = sum(len(word) for word in words if word in speaker_compact) if substantive else 0
-                scores.append((spk_ok, exact_text, topic_line, score, coverage, text_sub_cov, substantive, speaker_cov, -idx))
+                # The character filter selects a scene. A literal quote still
+                # anchors to the line that contains it, even in a multi-speaker scene.
+                scores.append((exact_text, spk_ok, topic_line, score, coverage, text_sub_cov, substantive, speaker_cov, -idx))
             line_scores.append(max(scores))
         match = lines[max(range(len(lines)), key=line_scores.__getitem__)] if lines else None
         item["line_id"] = match["id"] if match else ""
@@ -345,12 +347,19 @@ def _score_fields(query: str, fields: dict[str, str], allow_fuzzy: bool = False)
     query_compact = "".join(words)
     has_punct = any(not ch.isalnum() and not ch.isspace() and not ("\u3400" <= ch <= "\u9fff") for ch in query)
     exact_weights = {"text": 300.0, "speaker": 280.0, "mission": 220.0, "metadata": 170.0}
-    for field, value in fields.items():
-        value = normalize_text(value).lower()
+    for field, raw_value in fields.items():
+        value = normalize_text(raw_value).lower()
         value_compact = _compact(value)
-        if query in value:
+        # A chunk can contain consecutive lines from different speakers. Keep
+        # their boundaries when deciding whether it contains a literal quote.
+        lines = raw_value.splitlines() if field == "text" and "\n" in raw_value else ()
+        if query in value and (not lines or any(query in normalize_text(line).lower() for line in lines)):
             candidate = (exact_weights[field], "exact", field)
-        elif query_compact and len(query_compact) >= 2 and (len(words) == 1 or has_punct) and query_compact in value_compact:
+        elif (
+            len(query_compact) >= 2 and (len(words) == 1 or has_punct)
+            and query_compact in value_compact
+            and (not lines or any(query_compact in _compact(normalize_text(line)) for line in lines))
+        ):
             candidate = (exact_weights[field] - 5.0, "exact", field)
         elif words and all(word in value or word in value_compact for word in words):
             candidate = (exact_weights[field] - 30.0, "keyword", field)

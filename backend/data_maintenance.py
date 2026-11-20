@@ -97,9 +97,11 @@ def inspect_source(source: Path | str) -> dict:
         timeline_scripts += "PlayTimeline" in types
         for task_type in types:
             task_types[task_type] = task_types.get(task_type, 0) + 1
-    inputs = sorted(set(textmaps + list((root / "ExcelOutput").glob("*.json")) + scripts + list(root.glob(MISSION_TRIGGER_PATTERN))))
+    inputs = set(textmaps + list((root / "ExcelOutput").glob("*.json")) + scripts)
+    for tree in ("Config/Level", "Config/LevelOutput", "Story/BattlePerformance"):
+        inputs.update((root / tree).rglob("*.json"))
     digest = hashlib.sha256()
-    for path in inputs:
+    for path in sorted(inputs):
         digest.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0")
         file_hash = hashlib.sha256()
         with path.open("rb") as stream:
@@ -112,7 +114,8 @@ def inspect_source(source: Path | str) -> dict:
             "sentence_records": len(sentences), "scripts": len(scripts),
             "empty_scripts": empty_scripts,
             "timeline_scripts": timeline_scripts, "task_types": dict(sorted(task_types.items())),
-            "input_files": len(inputs), "input_sha256": digest.hexdigest(), "importer_version": IMPORTER_VERSION}
+            "input_files": len(inputs), "input_sha256": digest.hexdigest(), "input_fingerprint_version": 2,
+            "importer_version": IMPORTER_VERSION}
 
 
 def stamp_provenance(database: Path | str, provenance: dict, source_report: dict | None = None) -> dict:

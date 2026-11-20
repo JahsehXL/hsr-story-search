@@ -501,19 +501,17 @@ export function sceneStatusLabel(script: string, explicitLabel?: string): string
   return '';
 }
 
-export function isTrailingExtraScene(script: string, orderedScripts?: ReadonlySet<string>): boolean {
-  return script.startsWith('Recovered/') && !orderedScripts?.has(script);
+export function isTrailingExtraScene(script: string, orderedScripts?: ReadonlySet<string>, optionalScripts?: ReadonlySet<string>): boolean {
+  return Boolean(optionalScripts?.has(script) || (script.startsWith('Recovered/') && !orderedScripts?.has(script)));
 }
 
 export function shouldShowTrailingExtraDivider(
   previousScript: string | undefined,
   currentScript: string,
   orderedScripts?: ReadonlySet<string>,
+  optionalScripts?: ReadonlySet<string>,
 ): boolean {
-  return Boolean(
-    previousScript
-    && !isTrailingExtraScene(previousScript, orderedScripts)
-    && isTrailingExtraScene(currentScript, orderedScripts),
-  );
+  const extra = isTrailingExtraScene(currentScript, orderedScripts, optionalScripts);
+  return extra && (previousScript ? !isTrailingExtraScene(previousScript, orderedScripts, optionalScripts) : Boolean(optionalScripts?.has(currentScript)));
 }
 

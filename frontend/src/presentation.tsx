@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-const gameTag = /<\/?(?:color|size|b|i|u|s|align|alpha|voffset|font|material|link|noparse|unbreak|unbreakable)(?=[\s=>])[^>]*>/gi;
+const gameTag = /<\/?(?:color|size|b|i|it|u|s|align|alpha|voffset|font|material|link|noparse|unbreak|unbreakable)(?=[\s=>])[^>]*>/gi;
 const dynamicText = /\{TEXTJOIN#\d+\}/g;
 
 export function speakerName(value: string) {

@@ -76,6 +76,13 @@ def test_main_textmap_and_wrapper_build_preserve_source_and_old_database(source,
     report = inspect_source(source.parent)
     assert report["source"] == str(source)
     assert report["scripts"] == 1
+    graph = "Config/Level/Mission/1/MissionInfo_1.json"
+    write_json(source, graph, {"StartSubMissionList": [101]})
+    graph_report = inspect_source(source)
+    assert graph_report["input_fingerprint_version"] == 2
+    assert graph_report["input_files"] == report["input_files"] + 1
+    write_json(source, graph, {"StartSubMissionList": [102]})
+    assert inspect_source(source)["input_sha256"] != graph_report["input_sha256"]
     first = tmp_path / "first.db"
     built = build_candidate(source, first, provenance())
     assert built["audit"]["ok"]

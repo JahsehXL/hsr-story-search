@@ -14,18 +14,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from .mission_order import apply_mission_script_orders, ensure_script_order_schema
+from .mission_order import (
+    OPTIONAL_SUB_MISSION, VOICE_TASKS, apply_mission_script_orders,
+    ensure_script_order_schema, mission_talk_range, municipal_chat_sentence_ids,
+    voice_sentence_ids, voice_sentence_map,
+)
 from .version_metadata import load_metadata, normalize_name
 
 
 SCHEMA_VERSION = 1
-IMPORTER_VERSION = 8
+IMPORTER_VERSION = 9
 MISSION_TRIGGER_PATTERN = "Config/Level/Mission/*/Mission_*.json"
 SCRIPT_PATTERNS = (MISSION_TRIGGER_PATTERN, "Config/Level/Mission/*/Act/*.json",
                    "Story/Discussion/Mission/*/*.json", "Story/Mission/*/*.json")
 TYPE_NAMES = {"Main": "开拓任务", "Branch": "支线任务", "Companion": "同行任务", "Daily": "每日任务"}
-TAG_PATTERN = re.compile(r"</?(?:color|size|b|i|u|s|align|alpha|voffset|font|material|link|noparse|unbreak|unbreakable|icon)(?=[\s=>])[^>]*>", re.I)
+TAG_PATTERN = re.compile(r"</?(?:color|size|b|i|it|u|s|align|alpha|voffset|font|material|link|noparse|unbreak|unbreakable|icon)(?=[\s=>])[^>]*>", re.I)
 RUBY_PATTERN = re.compile(r"\{RUBY_B#([^}]*)\}(.*?)\{RUBY_E#\}")
+TEXTJOIN_PATTERN = re.compile(r"\{TEXTJOIN#(\d+)\}")
 VERIFIED_SCENES = (
     # 雅利洛-Ⅵ「躲得过初一，躲不过十五」，与布洛妮娅对峙及战后对白。
     # TalkSentenceConfig carries the dialogue, but the exported scripts omit its references.
@@ -80,9 +85,9 @@ VERIFIED_BATTLE_OWNERS = {"20332072": "1036105", "20431070": "1040408"}
 NARRATIVE_TYPES = {"开拓任务", "Gap", "同行任务"}
 SINGLE_SENTENCE_TASKS = {"PlayMultiVoiceTalk", "PerformanceTransition", "PlayScreenTransfer", "PerformanceEndBlackText"}
 TALK_LIST_TASKS = {"PlayAndWaitSimpleTalk", "PlaySimpleTalk", "PlayMissionTalk", "PlayAndWaitRogueSimpleTalk", "PlayRogueSimpleTalk"}
-OPTION_LIST_TASKS = {"PlayOptionTalk", "PlayRogueOptionTalk"}
-EXTRA_DIALOGUE_TASKS = {"PlayFullScreenTransfer", "PlayNPCBubbleTalk", "PlayNPCSingleBubbleTalk", "PlayOrigamiTraceTalk"}
-DIALOGUE_TASK_TYPES = SINGLE_SENTENCE_TASKS | TALK_LIST_TASKS | OPTION_LIST_TASKS | EXTRA_DIALOGUE_TASKS
+OPTION_LIST_TASKS = {"PlayOptionTalk", "PlayRogueOptionTalk", "ConvincePlayOptionTalk"}
+EXTRA_DIALOGUE_TASKS = {"PlayFullScreenTransfer", "PlayNPCBubbleTalk", "PlayNPCSingleBubbleTalk", "PlayOrigamiTraceTalk", "PlayMunicipalChat"}
+DIALOGUE_TASK_TYPES = SINGLE_SENTENCE_TASKS | TALK_LIST_TASKS | OPTION_LIST_TASKS | EXTRA_DIALOGUE_TASKS | VOICE_TASKS
 CONTAINER_TASK_KEYS: dict[str, tuple[str, ...]] = {
     "PredicateTaskList": ("SuccessTaskList", "FailedTaskList"),
     "RandomConfig": ("TaskList",),
@@ -205,6 +210,9 @@ class DatasetBuilder:
             if path.exists():
                 self.texts.update(json.loads(path.read_text(encoding="utf-8-sig")))
         self.sentences: dict[str, dict] = {}
+        self.text_joins: dict[str, str] = {}
+        self.voice_sentences: dict[str, str | None] = {}
+        self.voice_lines: set[tuple[str, str]] = set()
         self.used_sentences: set[str] = set()
         self.missions: dict[str, dict] = {}
         self.verified_missions: dict[str, dict] = {}
@@ -233,10 +241,26 @@ class DatasetBuilder:
             value = value.get("Hash", "")
         return self.texts.get(str(value), "")
 
+    def _resolve_text_joins(self, text: str) -> str:
+        if "{TEXTJOIN#" not in text:
+            return text
+        return TEXTJOIN_PATTERN.sub(lambda match: self.text_joins.get(match[1], match[0]), text)
+
     def load_metadata(self) -> None:
         self.verified_missions = {entry["id"]: entry for entry in load_metadata()}
         chapters = {str(row["ID"]): row for row in read_records(self.root / "ExcelOutput/MissionChapterConfig.json")}
         worlds = {str(row["ID"]): self.resolve(row.get("WorldName")) for row in read_records(self.root / "ExcelOutput/WorldDataConfig.json")}
+        join_items = {
+            str(row["TextJoinItemID"]): self.resolve(row.get("TextJoinText"))
+            for row in read_records(self.root / "ExcelOutput/TextJoinItem.json")
+            if row.get("TextJoinItemID") is not None
+        }
+        self.text_joins = {
+            str(row["TextJoinID"]): value
+            for row in read_records(self.root / "ExcelOutput/TextJoinConfig.json")
+            if row.get("TextJoinID") is not None
+            and (value := join_items.get(str(row.get("DefaultItem", "")), ""))
+        }
         for row in read_records(self.root / "ExcelOutput/MainMission.json"):
             mission_id = str(row["MainMissionID"])
             chapter = chapters.get(str(row.get("ChapterID")), {})
@@ -251,15 +275,18 @@ class DatasetBuilder:
             if mission_id in {"2021801", "2021802", "2021803"}:  # 《假面双人舞》
                 details["world"] = "匹诺康尼"
             self.add_mission(mission_id, details)
-        for row in read_records(self.root / "ExcelOutput/TalkSentenceConfig.json"):
+        sentence_records = read_records(self.root / "ExcelOutput/TalkSentenceConfig.json")
+        self.voice_sentences = voice_sentence_map(sentence_records)
+        for row in sentence_records:
             sentence_id = row.get("TalkSentenceID")
-            text = self.resolve(row.get("TalkSentenceText"))
-            if sentence_id is None or not text:
+            raw_text = self.resolve(row.get("TalkSentenceText"))
+            if sentence_id is None or not raw_text:
                 self.unresolved_sentences += 1
                 continue
+            speaker_raw = self._resolve_text_joins(self.resolve(row.get("TextmapTalkSentenceName")))
             self.sentences[str(sentence_id)] = {
-                "speaker": normalize_text(self.resolve(row.get("TextmapTalkSentenceName"))) or "开拓者",
-                "text": text,
+                "speaker": normalize_text(speaker_raw) or "开拓者",
+                "text": self._resolve_text_joins(raw_text),
             }
         trigger_owners: dict[tuple[str, str], set[str]] = defaultdict(set)
         for mission_script in sorted(self.root.glob(MISSION_TRIGGER_PATTERN)):
@@ -306,7 +333,10 @@ class DatasetBuilder:
             return None
         if isinstance(position, float) and position.is_integer():
             position = int(position)
-        self.used_sentences.add(sentence_id)
+        if kind == "voice":
+            self.voice_lines.add((mission_id, sentence_id))
+        else:
+            self.used_sentences.add(sentence_id)
         stable_source = f"{script}:{sequence}:{position}:{sentence_id}:{kind}"
         return {
             "id": hashlib.sha256(stable_source.encode()).hexdigest()[:32],
@@ -570,13 +600,17 @@ class DatasetBuilder:
 
         return visit(task)
 
-    @staticmethod
-    def _extract_task_items(task: dict) -> tuple[str, list[tuple[object, str, str]]]:
+    def _extract_task_items(self, task: dict) -> tuple[str, list[tuple[object, str, str]]]:
         """Return (short_type, [(sentence_id, kind, trigger), ...]) for one leaf talk task."""
         short_type = str(task.get("$type", "")).rsplit(".", 1)[-1]
         if short_type in TALK_LIST_TASKS:
             items = [(item.get("TalkSentenceID"), "dialogue", "")
                      for item in task.get("SimpleTalkList", []) if isinstance(item, dict)]
+            if short_type == "PlayMissionTalk" and not any(sid for sid, _, _ in items):
+                items = [(sid, "dialogue", "") for sid in mission_talk_range(task)]
+            return short_type, items
+        if short_type in VOICE_TASKS:
+            items = [(sid, "voice", "") for sid in voice_sentence_ids(task, self.voice_sentences) if sid in self.sentences]
             return short_type, items
         if short_type in SINGLE_SENTENCE_TASKS:
             if task.get("TextEnabled", True) and task.get("TalkSentenceID"):
@@ -611,6 +645,14 @@ class DatasetBuilder:
                 if isinstance(item, dict)
             ]
             return short_type, items
+        if short_type == "PlayMunicipalChat":
+            rel = task.get("NewMunicipalChatConfigPath")
+            if isinstance(rel, str) and rel.endswith(".json"):
+                target = (self.root / rel).resolve()
+                if target.is_relative_to(self.root.resolve()) and target.is_file():
+                    cfg = json.loads(target.read_text(encoding="utf-8-sig"))
+                    return short_type, [(sid, "dialogue", "") for sid in municipal_chat_sentence_ids(cfg)]
+            return short_type, []
         return short_type, []
 
     def process_file(self, path: Path) -> None:
@@ -618,6 +660,23 @@ class DatasetBuilder:
         parts = path.relative_to(self.root).parts
         data = json.loads(path.read_text(encoding="utf-8-sig"))
         sequences = data.get("OnStartSequece", [])
+        sequence_waits = [
+            [str(task.get("CustomString", {}).get("Value", "")) for task in sequence.get("TaskList", [])
+             if str(task.get("$type", "")).endswith("WaitCustomString")]
+            for sequence in sequences
+        ]
+        sequence_nodes = [next((value for value in waits if value), f"sequence:{idx}")
+                          for idx, waits in enumerate(sequence_waits)]
+        debate_turns: dict[int, set[str]] = defaultdict(set)
+        for node, sequence in zip(sequence_nodes, sequences):
+            for task in sequence.get("TaskList", []):
+                short_type = str(task.get("$type", "")).rsplit(".", 1)[-1]
+                if short_type == "ConvinceWaitTurnBegin":
+                    turn = task.get("TurnIndex", 0)
+                    if type(turn) is int and turn >= 0:
+                        debate_turns[turn].add(node)
+                elif short_type == "ConvinceWaitAllTurnFinish":
+                    debate_turns[-1].add(node)
         is_mission_script = path.name.startswith("Mission_") and parts[:3] == ("Config", "Level", "Mission")
         sequence_entries: list[list[tuple[int, int, int, tuple[tuple[str, int], ...], dict]]] = []
         sequence_triggers: list[list[tuple[int, tuple[tuple[str, int], ...], str]]] = []
@@ -652,9 +711,14 @@ class DatasetBuilder:
                     entries.append((task_index * 10000, task_index, task_index, (), top_task))
                     for trigger in sorted(self.nested_triggers(top_task)):
                         seq_triggers.append((task_index, (), trigger))
+                    if short_top == "ConvinceMoveTurn":
+                        turn = top_task.get("TurnIndex", 0)
+                        destinations = debate_turns.get(turn, ()) if type(turn) is int else ()
+                        if len(destinations) == 1:
+                            seq_triggers.append((task_index, (), next(iter(destinations))))
             for _, _, _, _, subtask in entries:
                 short_sub, extracted = self._extract_task_items(subtask)
-                if short_sub in DIALOGUE_TASK_TYPES:
+                if short_sub in DIALOGUE_TASK_TYPES and (short_sub not in VOICE_TASKS or extracted):
                     has_dialogue = True
                 if short_sub in OPTION_LIST_TASKS:
                     has_options = True
@@ -695,12 +759,9 @@ class DatasetBuilder:
             and resolved_script_sids.issubset(self.mission_perf_sentences[mission_id])
         )
         references: set[str] = set()
-        for sequence_index, sequence in enumerate(sequences):
-            tasks = sequence.get("TaskList", [])
-            waits = [str(task.get("CustomString", {}).get("Value", "")) for task in tasks
-                     if str(task.get("$type", "")).endswith("WaitCustomString")]
+        for sequence_index, waits in enumerate(sequence_waits):
             branch = next((value for value in waits if value), "")
-            node = branch or f"sequence:{sequence_index}"
+            node = sequence_nodes[sequence_index]
             lines: list[dict] = []
 
             emitted_alt_set: set[str] = set()
@@ -815,8 +876,11 @@ class DatasetBuilder:
         perf_prefix_missions: dict[str, set[str]] = defaultdict(set)
         mission_script_p7_counts: dict[tuple[str, str], int] = defaultdict(int)
         script_prefix_counts: dict[tuple[str, str], dict[str, int]] = defaultdict(dict)
+        # A recording can be replayed in an unrelated scene. It proves that one
+        # line is played there, but gives no information about neighboring IDs.
         for p7, mid, script, cnt in self.conn.execute(
-            "SELECT substr(sentence_id,1,7),mission_id,script,count(DISTINCT sentence_id) FROM lines WHERE length(sentence_id)=9 GROUP BY 1,2,3"
+            "SELECT substr(sentence_id,1,7),mission_id,script,count(DISTINCT sentence_id) "
+            "FROM lines WHERE length(sentence_id)=9 AND kind!='voice' GROUP BY 1,2,3"
         ):
             prefix_missions[p7].add(mid)
             if script.startswith("Config/Level/Mission/") and script.rsplit("/", 1)[-1].startswith("Mission_"):
@@ -890,7 +954,7 @@ class DatasetBuilder:
         timeline_anchors: dict[str, list[dict]] = {}
         ambiguous_prefixes: set[str] = set()
         for row in self.conn.execute("""SELECT substr(sentence_id,1,7) prefix,mission_id,script
-                FROM lines WHERE length(sentence_id)=9
+                FROM lines WHERE length(sentence_id)=9 AND kind!='voice'
                 GROUP BY prefix,mission_id,script HAVING count(DISTINCT sentence_id)>=2"""):
             p7, mid, script = row
             mission = self.missions.get(mid, {})
@@ -960,7 +1024,7 @@ class DatasetBuilder:
             placeholders = ",".join("?" for _ in target_mids)
             return self.conn.execute(
                 f"""SELECT mission_id, sentence_id, script, sequence, position, branch, kind
-                    FROM lines WHERE sentence_id LIKE ? AND mission_id IN ({placeholders})
+                    FROM lines WHERE sentence_id LIKE ? AND kind!='voice' AND mission_id IN ({placeholders})
                     ORDER BY CAST(sentence_id AS INTEGER),
                              CASE WHEN script LIKE 'Config/Level/Mission/%/Mission\\_%.json' ESCAPE '\\' THEN 1 ELSE 0 END,
                              mission_id, sequence, position""",
@@ -970,7 +1034,7 @@ class DatasetBuilder:
         def insert_anchored(existing_rows: list[sqlite3.Row], target_sids: list[str]) -> None:
             first_sid = int(existing_rows[0]["sentence_id"])
             before = existing_rows[0]
-            before_sids = [sid for sid in target_sids if int(sid) < first_sid]
+            before_sids = [sid for sid in target_sids if int(sid) < first_sid and (before["mission_id"], sid) not in self.voice_lines]
             if before_sids:
                 positions = reserve(before["mission_id"], before["script"], before["sequence"], before["position"], len(before_sids), before=True)
                 self.save_lines([self.make_line(sid, before["mission_id"], before["script"], before["sequence"], pos, before["branch"], "dialogue")
@@ -979,7 +1043,9 @@ class DatasetBuilder:
             batches: dict[int, list[str]] = defaultdict(list)
             for sid in target_sids:
                 if int(sid) >= first_sid:
-                    batches[bisect_right(anchors, int(sid)) - 1].append(sid)
+                    index = bisect_right(anchors, int(sid)) - 1
+                    if (existing_rows[index]["mission_id"], sid) not in self.voice_lines:
+                        batches[index].append(sid)
             for index, batch in batches.items():
                 anchor = existing_rows[index]
                 positions = reserve(anchor["mission_id"], anchor["script"], anchor["sequence"], anchor["position"], len(batch))
@@ -1060,7 +1126,8 @@ class DatasetBuilder:
                                 left_mid, _ = unique_anchors[pos - 1]
                                 right_mid, _ = unique_anchors[pos]
                                 if left_mid is not None and left_mid == right_mid and is_narrative_story(left_mid):
-                                    sandwiched_batches[pos - 1].append(sid)
+                                    if (left_mid, sid) not in self.voice_lines:
+                                        sandwiched_batches[pos - 1].append(sid)
                                     continue
                             remaining_sids.append(sid)
                         for anchor_idx, batch in sandwiched_batches.items():
@@ -1080,6 +1147,9 @@ class DatasetBuilder:
                     perf_script = next(iter(assets))
             if not (_accepts_anchored_recovery(mid) or (mid, p7) in calibrated or
                     mid in namespace_owners.get(p7[:5], ()) or p7 in anchored_ranges or p7 in VERIFIED_TIMELINES):
+                continue
+            sids = [sid for sid in sids if (mid, sid) not in self.voice_lines]
+            if not sids:
                 continue
             if p7 in anchored_ranges:
                 script = anchored_ranges[p7][1]
@@ -1202,7 +1272,7 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
             raise ValueError("没有解析出任何剧情台词，请检查文字映射、任务表和脚本格式")
         conn.commit()
         report("unlinked", 0, 1, "统计未关联文字及整理回顾候选")
-        unlinked_sentence_count = len(set(builder.sentences) - builder.used_sentences)
+        unlinked_sentence_count = len(set(builder.sentences) - builder.used_sentences - {sid for _, sid in builder.voice_lines})
         builder.save_recalls()
         from .version_metadata import apply_versions
         verified_versions = apply_versions(conn)
@@ -1226,7 +1296,7 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
         stats.update(story_counts(conn))
         conn.executemany("INSERT INTO info(key,value) VALUES(?,?)", [(key, json.dumps(value, ensure_ascii=False)) for key, value in stats.items()])
         report("order", 0, 1, "根据任务流程整理跨脚本顺序")
-        apply_mission_script_orders(source, conn)
+        apply_mission_script_orders(source, conn, voice_sentences=builder.voice_sentences)
         conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('optimize')")
         conn.commit()
         conn.execute("ANALYZE")
@@ -1282,24 +1352,27 @@ def _script_sort_key(row: dict) -> tuple:
     return (supplemental, order, script, row.get("sequence", 0), row.get("position", 0))
 
 
-def _load_mission_script_order(conn: sqlite3.Connection, mission_id: str) -> dict[str, float]:
+def _load_mission_script_order(conn: sqlite3.Connection, mission_id: str) -> dict[str, tuple[float, str]]:
     has_table = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='script_order'"
     ).fetchone()
     if not has_table:
         return {}
     return {
-        row[0]: float(row[1])
-        for row in conn.execute("SELECT script, rank FROM script_order WHERE mission_id=?", (mission_id,))
+        row["script"]: (float(row["rank"]), row["source"])
+        for row in conn.execute("SELECT script, rank, source FROM script_order WHERE mission_id=?", (mission_id,))
     }
 
 
 def performance_script_id(script: str) -> str:
-    match = re.fullmatch(r"(?:Config/Level/Mission/\d+/Act/Act|Story/Mission/\d+/Story)(\d+)\.json", script)
+    match = re.fullmatch(
+        r"(?:Config/Level/Mission/\d+/Act/Act|Story/Mission/\d+/Story|Story/Discussion/Mission/\d+/DS)(\d+)\.json",
+        script,
+    )
     return match[1] if match else ""
 
 
-def _collapse_mirrored_scripts(lines: list[dict]) -> tuple[list[dict], dict[str, str]]:
+def _collapse_mirrored_scripts(lines: list[dict], ordered_scripts: set[str] | None = None) -> tuple[list[dict], dict[str, str]]:
     performances: dict[str, dict[str, list[dict]]] = {}
     for line in lines:
         script = line["script"]
@@ -1311,20 +1384,52 @@ def _collapse_mirrored_scripts(lines: list[dict]) -> tuple[list[dict], dict[str,
 
     aliases: dict[str, str] = {}
     for scripts in performances.values():
-        if len(scripts) != 2:
+        act_scripts = [lines for name, lines in scripts.items() if name.startswith("Config/")]
+        if len(act_scripts) != 1:
             continue
-        (act_script, act), (story_script, story) = sorted(scripts.items())
-        if not (act_script.startswith("Config/") and story_script.startswith("Story/")):
-            continue
+        act = act_scripts[0]
         positions = {signature(line): index for index, line in enumerate(act)}
         if len(positions) != len(act):
             continue
-        matches = [positions.get(signature(line), -1) for line in story]
-        # The shorter script must match in order, including all option destinations.
-        if matches[0] < 0 or any(left >= right for left, right in zip(matches, matches[1:])):
-            continue
-        aliases.update({line["id"]: act[index]["id"] for line, index in zip(story, matches)})
-    return [line for line in lines if line["id"] not in aliases], aliases
+        for story_script, story in scripts.items():
+            if not story_script.startswith("Story/"):
+                continue
+            matches = [positions.get(signature(line), -1) for line in story]
+            if -1 in matches or len(set(matches)) != len(matches):
+                continue
+            if story_script.startswith("Story/Discussion/"):
+                # A debate graph can declare its rounds out of order. Collapse it
+                # only when the Act covers the same choices and every spoken branch.
+                act_choices = {signature(line) for line in act if line["kind"] == "option" and line["trigger"]}
+                story_choices = {signature(line) for line in story if line["kind"] == "option" and line["trigger"]}
+                if not act_choices or story_choices != act_choices or any(
+                    line["kind"] != "option" and line["branch"] != act[index]["branch"]
+                    for line, index in zip(story, matches)
+                ):
+                    continue
+            elif any(left >= right for left, right in zip(matches, matches[1:])):
+                continue
+            aliases.update({line["id"]: act[index]["id"] for line, index in zip(story, matches)})
+    surviving = [line for line in lines if line["id"] not in aliases]
+    if ordered_scripts:
+        by_script: dict[str, list[dict]] = {}
+        for line in surviving:
+            by_script.setdefault(line["script"], []).append(line)
+        ordered_by_sig: dict[tuple[tuple, ...], list[dict]] = {}
+        for sc in sorted(ordered_scripts):
+            sc_lines = by_script.get(sc, [])
+            if len(sc_lines) >= 2:
+                sigs = tuple(signature(line) for line in sc_lines)
+                if len(set(sigs)) == len(sigs):
+                    ordered_by_sig.setdefault(sigs, sc_lines)
+        for sc, sc_lines in by_script.items():
+            if sc in ordered_scripts or len(sc_lines) < 2:
+                continue
+            kept = ordered_by_sig.get(tuple(signature(line) for line in sc_lines))
+            if kept and all(dup["branch"] == ref["branch"] for dup, ref in zip(sc_lines, kept)):
+                aliases.update({dup["id"]: ref["id"] for dup, ref in zip(sc_lines, kept)})
+        surviving = [line for line in surviving if line["id"] not in aliases]
+    return surviving, aliases
 
 
 def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
@@ -1343,16 +1448,22 @@ def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
         all_lines = [dict(row) for row in conn.execute(f"SELECT * FROM lines WHERE {condition}", args)]
         script_ranks = _load_mission_script_order(conn, str(mission_id))
         ordered_scripts: set[str] = set()
+        optional_scripts: set[str] = set()
         if script_ranks:
             num_to_rank: dict[int, float] = {}
-            for sc, rank in script_ranks.items():
-                if (num := _script_trailing_num(sc)) is not None:
+            for sc, (rank, origin) in script_ranks.items():
+                if origin != OPTIONAL_SUB_MISSION and (num := _script_trailing_num(sc)) is not None:
                     num_to_rank[num] = min(num_to_rank.get(num, rank), rank)
             rank_prefix: dict[str, tuple[int, float]] = {}
             for sc in {row["script"] for row in all_lines}:
                 if sc in script_ranks:
-                    rank_prefix[sc] = (0, script_ranks[sc])
-                    ordered_scripts.add(sc)
+                    rank, origin = script_ranks[sc]
+                    if origin == OPTIONAL_SUB_MISSION:
+                        rank_prefix[sc] = (2, rank)
+                        optional_scripts.add(sc)
+                    else:
+                        rank_prefix[sc] = (0, rank)
+                        ordered_scripts.add(sc)
                 elif sc in VERIFIED_SCENE_ORDER:
                     v = VERIFIED_SCENE_ORDER[sc]
                     if int(v) in num_to_rank:
@@ -1366,14 +1477,19 @@ def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
         else:
             all_lines.sort(key=_script_sort_key)
         if not script:
-            all_lines, aliases = _collapse_mirrored_scripts(all_lines)
+            all_lines, aliases = _collapse_mirrored_scripts(all_lines, ordered_scripts)
             line_id = aliases.get(line_id, line_id)
+            optional_scripts &= {row["script"] for row in all_lines}
         total = len(all_lines)
+        anchor_missing = False
         if line_id:
             for idx, item in enumerate(all_lines):
                 if item["id"] == line_id:
                     offset = max(0, idx - limit // 3)
                     break
+            else:
+                anchor_missing = True
+                line_id = None
         lines = all_lines[offset:offset + limit]
         for item in lines:
             if label := VERIFIED_SCENE_LABELS.get(item["script"]):
@@ -1383,10 +1499,10 @@ def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
         if scripts:
             placeholders = ",".join("?" for _ in scripts)
             edges = [dict(row) for row in conn.execute(f"SELECT DISTINCT * FROM edges WHERE script IN ({placeholders})", scripts)]
-        return {"mission": dict(mission), "lines": lines, "edges": edges, "anchor_line_id": line_id,
+        return {"mission": dict(mission), "lines": lines, "edges": edges, "anchor_line_id": line_id, "anchor_missing": anchor_missing,
                 "recalls": [dict(row) for row in conn.execute("SELECT * FROM recalls WHERE mission_id=?", (str(mission_id),))],
                 "scripts": [row[0] for row in conn.execute("SELECT DISTINCT script FROM lines WHERE mission_id=? ORDER BY script", (str(mission_id),))],
-                "ordered_scripts": sorted(ordered_scripts),
+                "ordered_scripts": sorted(ordered_scripts), "optional_scripts": sorted(optional_scripts),
                 "total": total, "offset": offset, "has_more": offset + len(lines) < total}
 
 

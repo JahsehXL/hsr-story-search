@@ -23,6 +23,8 @@ BATTLE_PERFORM_PATTERN = re.compile(r"Story/BattlePerformance/(\d+)/BattlePerfor
 TALK_SENTENCE_SIGNAL = re.compile(r"TalkSentence_(\d+)")
 PERFORMANCE_FILE_PID = re.compile(r"(?:Act|DS|Story)(\d{9})\.json$")
 NESTED_GRAPH_KEYS = ("DialoguePath", "LevelGraph", "TaskListTemplatePath", "InitLevelGraph", "JsonPath", "BattlePerformPath")
+OPTIONAL_SUB_MISSION = "optional_sub_mission"
+VOICE_TASKS = {"PlayVoice", "PlayVoice_Single", "PlayVoice_Sequence"}
 
 
 def ensure_script_order_schema(conn: sqlite3.Connection) -> None:
@@ -52,6 +54,89 @@ def _extract_int(value: object) -> int | None:
         if "Value" in value:
             return _extract_int(value.get("Value"))
     return None
+
+
+def mission_talk_range(task: dict) -> range:
+    """Resolve a static, bounded PlayMissionTalk range."""
+    start_value, end_value = task.get("StartSentenceID"), task.get("EndSentenceID")
+    if any(isinstance(value, dict) and value.get("IsDynamic") for value in (start_value, end_value)):
+        return range(0)
+    start = _extract_int(start_value)
+    end = _extract_int(end_value) if end_value is not None else start
+    if start is None or end is None or start < 1 or not 0 <= end - start <= 200:
+        return range(0)
+    return range(start, end + 1)
+
+
+def voice_sentence_map(records: list[dict]) -> dict[str, str | None]:
+    """Use authored VoiceID links and leave ambiguous recordings unresolved."""
+    sentences: dict[str, str | None] = {}
+    for row in records:
+        if (sid := row.get("TalkSentenceID")) is not None and (voice_id := row.get("VoiceID")):
+            key = str(voice_id)
+            if sentences.setdefault(key, str(sid)) != str(sid):
+                sentences[key] = None
+    return sentences
+
+
+def voice_sentence_ids(task: dict, sentences: dict[str, str | None]) -> list[str]:
+    voice_ids = task.get("VoiceIDs") or (task.get("VoiceID"),)
+    return [sid for voice_id in voice_ids if (sid := sentences.get(str(voice_id))) is not None]
+
+
+def municipal_chat_sentence_ids(data: object) -> list[str]:
+    """Traverse a MunicipalChatConfig graph in dialogue node order and return TalkSentenceIDs."""
+    if not isinstance(data, dict):
+        return []
+    nodes: dict[str, dict] = {}
+    node_order: list[str] = []
+    for entry in data.get("NodeList") or ():
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("MunicipalNodeName")
+        if not isinstance(name, str) or not name or name in nodes:
+            continue
+        nodes[name] = entry
+        node_order.append(name)
+    if not node_order:
+        return []
+
+    visited: set[str] = set()
+    ordered_nodes: list[dict] = []
+
+    def drain(seed: object) -> None:
+        if not isinstance(seed, str) or seed not in nodes or seed in visited:
+            return
+        queue = deque([seed])
+        while queue:
+            name = queue.popleft()
+            if name in visited or name not in nodes:
+                continue
+            visited.add(name)
+            node = nodes[name]
+            ordered_nodes.append(node)
+            for trans in node.get("TransitionList") or ():
+                if isinstance(trans, dict):
+                    nxt = trans.get("MunicipalNodeName")
+                    if isinstance(nxt, str) and nxt in nodes and nxt not in visited:
+                        queue.append(nxt)
+
+    drain(data.get("StartNodeName"))
+    for fallback in node_order:
+        drain(fallback)
+
+    sids: list[str] = []
+    for node in ordered_nodes:
+        for action in node.get("ActionList") or ():
+            if not isinstance(action, dict):
+                continue
+            atype = str(action.get("$type", "")).rsplit(".", 1)[-1]
+            if atype and not atype.endswith("MunicipalChatActionTalk") and "TalkSentenceID" not in action:
+                continue
+            sid = _extract_int(action.get("TalkSentenceID"))
+            if sid and sid > 0:
+                sids.append(str(sid))
+    return sids
 
 
 def _read_records(value: object) -> list[dict]:
@@ -182,7 +267,7 @@ class _SourceReader:
 
 
 class _MissionOrderBuilder:
-    def __init__(self, reader: _SourceReader):
+    def __init__(self, reader: _SourceReader, voice_sentences: dict[str, str | None] | None = None):
         self.reader = reader
         self.perf_map: dict[tuple[str, str], str] = {}
         self.pid_to_paths: dict[str, set[str]] = defaultdict(set)
@@ -192,6 +277,9 @@ class _MissionOrderBuilder:
         self.lg_index: dict[tuple[int, int], list[str]] = defaultdict(list)
         self.gg_index: dict[tuple[int, int], str] = {}
         self.mission_infos: dict[str, dict] = {}
+        self.voice_sentences = voice_sentences if voice_sentences is not None else voice_sentence_map(
+            _read_records(reader.read_json("ExcelOutput/TalkSentenceConfig.json")),
+        )
         self._load_indexes()
 
     def _load_indexes(self) -> None:
@@ -512,21 +600,22 @@ class _MissionOrderBuilder:
                     else:
                         for candidate in sorted(self.pid_to_paths.get(pid, ())):
                             events.append(("perf_path", candidate))
-                    events.append(("perf_id", pid))
+                    if not pp or PERFORMANCE_FILE_PID.search(pp):
+                        events.append(("perf_id", pid))
+            elif node_type == "PlayMunicipalChat":
+                cfg_path = node.get("NewMunicipalChatConfigPath")
+                if isinstance(cfg_path, str) and cfg_path.endswith(".json"):
+                    events.extend(("sid", sid) for sid in municipal_chat_sentence_ids(self.reader.read_json(cfg_path)))
             elif node_type in ("PlayMissionTalk", "PlayAndWaitSimpleTalk", "PlaySimpleTalk"):
+                has_sentences = False
                 for item in node.get("SimpleTalkList") or ():
                     if isinstance(item, dict):
                         sid_int = _extract_int(item.get("TalkSentenceID"))
                         if sid_int:
                             events.append(("sid", str(sid_int)))
-                s_start = _extract_int(node.get("StartSentenceID"))
-                s_end = _extract_int(node.get("EndSentenceID"))
-                if s_start and s_start > 0:
-                    if s_end and s_end >= s_start and (s_end - s_start) <= 200:
-                        for sid_int in range(s_start, s_end + 1):
-                            events.append(("sid", str(sid_int)))
-                    else:
-                        events.append(("sid", str(s_start)))
+                            has_sentences = True
+                if node_type == "PlayMissionTalk" and not has_sentences:
+                    events.extend(("sid", str(sid)) for sid in mission_talk_range(node))
             elif node_type == "PlayNPCBubbleTalk":
                 for item in node.get("BubbleTalkInfoList") or ():
                     if isinstance(item, dict):
@@ -542,15 +631,8 @@ class _MissionOrderBuilder:
                     sid_int = _extract_int(node.get("TalkSentenceID"))
                     if sid_int:
                         events.append(("sid", str(sid_int)))
-            elif node_type == "PlayVoice_Sequence":
-                for vid in node.get("VoiceIDs") or ():
-                    vid_int = _extract_int(vid)
-                    if vid_int:
-                        events.append(("sid", str(vid_int)))
-            elif node_type == "PlayVoice":
-                vid_int = _extract_int(node.get("VoiceID"))
-                if vid_int:
-                    events.append(("sid", str(vid_int)))
+            elif node_type in VOICE_TASKS:
+                events.extend(("sid", sid) for sid in voice_sentence_ids(node, self.voice_sentences))
             elif node_type in ("WaitCustomString", "TriggerCustomString"):
                 cs = node.get("CustomString")
                 val = cs.get("Value") if isinstance(cs, dict) else None
@@ -580,15 +662,39 @@ class _MissionOrderBuilder:
         walk(data.get("OnInitSequece"))
         walk(data.get("OnStartSequece"))
 
-    def _collect_mission_events(self, mid: str, visited_mids: set[str] | None = None) -> list[tuple[str, str]]:
+    @staticmethod
+    def _optional_submissions(mi: dict, may_finished: dict[int, set[int]]) -> set[int]:
+        sms = mi["sms"]
+        protected = set(mi["start"]) | set(mi["finish"])
+        optional: set[int] = set()
+        for smid, sm in sms.items():
+            cancelled: set[int] = set()
+            for action in sm.get("FinishActionList") or ():
+                if not isinstance(action, dict) or action.get("FinishActionType") != "delSubMission":
+                    continue
+                for value in action.get("FinishActionPara") or ():
+                    target = _extract_int(value)
+                    if target in sms and target != smid and target not in protected and sms[target].get("IsCanDelete"):
+                        cancelled.add(target)
+            if not cancelled:
+                continue
+            # A chain removed together is optional only where no remaining sub-mission depends on it.
+            required = set().union(*(ancestors for target, ancestors in may_finished.items() if target not in cancelled))
+            optional.update(cancelled - required)
+        return optional
+
+    def _collect_mission_events(
+        self, mid: str, visited_mids: set[str] | None = None,
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         if visited_mids is None:
             visited_mids = set()
         if mid in visited_mids or mid not in self.mission_infos:
-            return []
+            return [], []
         visited_mids.add(mid)
         mi = self.mission_infos[mid]
         ordered_sms, must_finished, may_finished = self._topo_order_submissions(mi)
-        sm_ids = set(mi["sms"].keys())
+        sm_ids = set(mi["sms"])
+        optional = self._optional_submissions(mi, may_finished)
 
         sm_group_pairs: dict[int, list[tuple[int, int]]] = {}
         group_ref_count: dict[tuple[int, int], int] = defaultdict(int)
@@ -612,13 +718,21 @@ class _MissionOrderBuilder:
             for pair in pairs:
                 group_ref_count[pair] += 1
 
-        events: list[tuple[str, str]] = []
+        ordinary_events: list[tuple[str, str]] = []
+        optional_events: list[tuple[str, str]] = []
+        events = ordinary_events
         visited_graphs: set[tuple[str, int]] = set()
 
         def emit_graph(rel: object, active_sm: int) -> None:
             self._collect_events_from_graph(
                 rel, mid, active_sm, must_finished, may_finished, sm_ids, events, visited_graphs
             )
+
+        def emit_raid(raid_id: int) -> None:
+            for raid_mid in self.raid_to_mids.get(raid_id, ()):
+                ordinary, extra = self._collect_mission_events(raid_mid, visited_mids)
+                events.extend(ordinary)
+                optional_events.extend(extra)
 
         def walk_pairs(target_pairs: list[tuple[int, int]], active_sm: int) -> None:
             for fl, gid in target_pairs:
@@ -645,7 +759,8 @@ class _MissionOrderBuilder:
                             emit_graph(obj.get("InitLevelGraph"), active_sm)
                 emit_graph(self.gg_index.get((fl, gid)), active_sm)
 
-        for smid in ordered_sms:
+        for smid in sorted(ordered_sms, key=optional.__contains__):
+            events = optional_events if smid in optional else ordinary_events
             sm = mi["sms"][smid]
             pairs = sm_group_pairs[smid]
             unique_pairs = [pair for pair in pairs if group_ref_count[pair] == 1]
@@ -674,11 +789,9 @@ class _MissionOrderBuilder:
             if sm.get("FinishType") == "RaidFinishedAndTransfer":
                 param_int = _extract_int(sm.get("ParamInt1"))
                 if param_int:
-                    for rmid in self.raid_to_mids.get(param_int, ()):
-                        events.extend(self._collect_mission_events(rmid, visited_mids))
+                    emit_raid(param_int)
                     if param_int >= 40000000:
-                        for rmid in self.raid_to_mids.get(param_int // 1000, ()):
-                            events.extend(self._collect_mission_events(rmid, visited_mids))
+                        emit_raid(param_int // 1000)
             walk_pairs(unique_pairs, smid)
             if sm.get("FinishType") in ("StageWin", "BattleWinWithCustomValue"):
                 stage_id = _extract_int(sm.get("ParamInt1"))
@@ -688,7 +801,7 @@ class _MissionOrderBuilder:
             if mj and mj_waits_talk:
                 emit_graph(mj, smid)
             walk_pairs(shared_pairs, smid)
-        return events
+        return ordinary_events, optional_events
 
     def _is_sibling(self, mid: str, src_mid: str) -> bool:
         if mid == src_mid:
@@ -702,7 +815,7 @@ class _MissionOrderBuilder:
     def _mid_sort_val(mid: str) -> tuple[int, str]:
         return (int(mid), mid) if mid.isdigit() else (0, mid)
 
-    def compute(self, conn: sqlite3.Connection) -> tuple[dict[str, dict[str, float]], int, int]:
+    def compute(self, conn: sqlite3.Connection) -> tuple[dict[str, dict[str, tuple[float, str]]], int, int]:
         mission_scripts: dict[str, list[str]] = defaultdict(list)
         script_sids: dict[tuple[str, str], set[str]] = defaultdict(set)
         for mid, script, sid in conn.execute(
@@ -715,14 +828,17 @@ class _MissionOrderBuilder:
             mission_scripts[mid].append(script)
 
         own_maps: dict[str, tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]] = {}
+        ordinary_counts: dict[str, int] = {}
         global_path_hits: dict[str, list[tuple[str, int]]] = defaultdict(list)
         global_pid_hits: dict[str, list[tuple[str, int]]] = defaultdict(list)
         global_sid_hits: dict[str, list[tuple[str, int]]] = defaultdict(list)
 
         for src_mid in sorted(self.mission_infos):
-            events = self._collect_mission_events(src_mid)
+            ordinary, optional = self._collect_mission_events(src_mid)
+            events = ordinary + optional
             if not events:
                 continue
+            ordinary_counts[src_mid] = len(ordinary)
             path_rank: dict[str, int] = {}
             pid_rank: dict[str, int] = {}
             sid_rank: dict[str, int] = {}
@@ -747,10 +863,10 @@ class _MissionOrderBuilder:
 
         total_missions = len(mission_scripts)
         total_scripts = sum(len(items) for items in mission_scripts.values())
-        orders: dict[str, dict[str, float]] = {}
+        orders: dict[str, dict[str, tuple[float, str]]] = {}
 
         for mid, scripts in mission_scripts.items():
-            raw_ranks: dict[str, tuple[int, tuple[int, str], int]] = {}
+            raw_ranks: dict[str, tuple[bool, int, tuple[int, str], int]] = {}
             own = own_maps.get(mid)
             mid_key = self._mid_sort_val(mid)
 
@@ -770,13 +886,13 @@ class _MissionOrderBuilder:
                         hits = [sid_rank[s] for s in sids if s in sid_rank]
                         if hits:
                             own_rank = min(hits)
-                    if own_rank is None:
+                    if own_rank is None and (sc.startswith("Recovered/") or "::timeline-" in sc):
                         p7_hits = [p7_rank[s[:7]] for s in sids if len(s) == 9 and s.isdigit() and s[:7] in p7_rank]
                         if p7_hits:
                             own_rank = min(p7_hits)
 
                 if own_rank is not None:
-                    raw_ranks[sc] = (0, (0, ""), own_rank)
+                    raw_ranks[sc] = (own_rank > ordinary_counts[mid], 0, (0, ""), own_rank)
                     continue
 
                 sibling_cands = [item for item in global_path_hits.get(base_sc, ()) if self._is_sibling(mid, item[0])]
@@ -787,22 +903,27 @@ class _MissionOrderBuilder:
                         if s in global_sid_hits:
                             sibling_cands.extend(item for item in global_sid_hits[s] if self._is_sibling(mid, item[0]))
                 if sibling_cands:
-                    best_src, best_rank = min(sibling_cands, key=lambda item: (self._mid_sort_val(item[0]), item[1]))
+                    best_src, best_rank = min(sibling_cands, key=lambda item: (
+                        item[1] > ordinary_counts[item[0]], self._mid_sort_val(item[0]), item[1],
+                    ))
                     tier = -1 if self._mid_sort_val(best_src) < mid_key else 1
-                    raw_ranks[sc] = (tier, self._mid_sort_val(best_src), best_rank)
+                    raw_ranks[sc] = (best_rank > ordinary_counts[best_src], tier, self._mid_sort_val(best_src), best_rank)
 
             if raw_ranks:
                 ordered = sorted(raw_ranks.items(), key=lambda item: (item[1], item[0]))
-                orders[mid] = {sc: float(index) for index, (sc, _) in enumerate(ordered, 1)}
+                orders[mid] = {
+                    sc: (float(index), OPTIONAL_SUB_MISSION if key[0] else "mission_graph")
+                    for index, (sc, key) in enumerate(ordered, 1)
+                }
         return orders, total_missions, total_scripts
 
 
 def compute_mission_script_orders(
-    source: Path | str, conn: sqlite3.Connection
-) -> tuple[dict[str, dict[str, float]], int, int]:
+    source: Path | str, conn: sqlite3.Connection, *, voice_sentences: dict[str, str | None] | None = None,
+) -> tuple[dict[str, dict[str, tuple[float, str]]], int, int]:
     """Compute per-mission script order ranks from raw source dir or archive ZIP."""
     with _SourceReader(source) as reader:
-        return _MissionOrderBuilder(reader).compute(conn)
+        return _MissionOrderBuilder(reader, voice_sentences).compute(conn)
 
 
 def _write_script_order_rows(
@@ -829,17 +950,20 @@ def _write_script_order_rows(
     return stats
 
 
-def apply_mission_script_orders(source: Path | str, conn: sqlite3.Connection) -> dict:
+def apply_mission_script_orders(
+    source: Path | str, conn: sqlite3.Connection, *, voice_sentences: dict[str, str | None] | None = None,
+) -> dict:
     """Compute and persist per-mission script ranks in `script_order` without altering lines/vectors."""
-    orders, total_missions, total_scripts = compute_mission_script_orders(source, conn)
+    orders, total_missions, total_scripts = compute_mission_script_orders(source, conn, voice_sentences=voice_sentences)
     rows = [
-        (mid, script, rank, "mission_graph")
+        (mid, script, rank, origin)
         for mid in sorted(orders)
-        for script, rank in sorted(orders[mid].items(), key=lambda item: (item[1], item[0]))
+        for script, (rank, origin) in sorted(orders[mid].items(), key=lambda item: item[1][0])
     ]
     stats = {
         "missions": len(orders),
         "scripts": len(rows),
+        "optional_scripts": sum(row[3] == OPTIONAL_SUB_MISSION for row in rows),
         "total_missions": total_missions,
         "total_scripts": total_scripts,
         "source": "mission_graph",
@@ -899,6 +1023,7 @@ def import_script_orders(conn: sqlite3.Connection, payload_path: Path | str) -> 
         **base_stats,
         "missions": len({row[0] for row in rows}),
         "scripts": len(rows),
+        "optional_scripts": sum(row[3] == OPTIONAL_SUB_MISSION for row in rows),
         "total_missions": total_missions,
         "total_scripts": total_scripts,
         "source": base_stats.get("source", "mission_graph"),

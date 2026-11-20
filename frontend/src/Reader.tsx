@@ -94,9 +94,10 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
   const [fullTextMode, setFullTextMode] = useState({ missionId: '', enabled: false });
   const scrollRef = useRef<HTMLDivElement>(null);
   const positionedIdentity = useRef('');
+  const locateWhenVisible = useRef('');
   const mission = detail?.mission;
   const identity = JSON.stringify([selected?.mission_id, selected?.line_id]);
-  const hitId = detail?.anchor_line_id ?? selected?.line_id ?? '';
+  const hitId = detail?.anchor_missing ? '' : detail?.anchor_line_id ?? selected?.line_id ?? '';
   const showFullText = fullTextMode.missionId === selected?.mission_id && fullTextMode.enabled;
   const model = useMemo(() => buildStoryModel(detail?.lines || [], detail?.edges || []), [detail?.lines, detail?.edges]);
   const customSelections = choiceOverrides.identity === identity ? choiceOverrides.selections : emptySelections;
@@ -104,6 +105,9 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
   const resolved = useMemo(() => resolveFullMissionStory(model, hitId, customSelections, customAltSelections), [model, hitId, customSelections, customAltSelections]);
   const groups = useMemo(() => resolved.groups.map(group => ({ ...group, blocks: storyBlocks(group.segments) })), [resolved.groups]);
   const orderedScripts = useMemo(() => new Set(detail?.ordered_scripts || []), [detail?.ordered_scripts]);
+  const optionalScripts = useMemo(() => new Set(detail?.optional_scripts || []), [detail?.optional_scripts]);
+  const hitGroup = model.byLine.get(hitId);
+  const hitVisible = Boolean(hitGroup && resolved.groups.includes(hitGroup));
   const visibleLines = useMemo(
     () => {
       const selectedAnswers = new Set(Object.values(resolved.selections));
@@ -130,14 +134,29 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
   }, [resolved.groups, resolved.selections]);
 
   const scrollToHit = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    if (!hitId || !scrollRef.current) return;
+    if (!hitId || !scrollRef.current) return false;
     const target = scrollRef.current.querySelector<HTMLElement>(`#line-${CSS.escape(hitId)}`);
     if (target) {
       const scroller = scrollRef.current;
       const top = target.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
       scroller.scrollTo({ top: Math.max(0, top - (scroller.clientHeight - target.offsetHeight) / 2), behavior });
+      return true;
     }
+    return false;
   }, [hitId]);
+
+  function locateHit() {
+    if (scrollToHit() || !hitGroup) return;
+    locateWhenVisible.current = identity;
+    setChoiceOverrides({ identity, selections: {} });
+    setAltOverrides({ identity, selections: {} });
+  }
+
+  useEffect(() => {
+    if (locateWhenVisible.current !== identity || !hitVisible) return;
+    locateWhenVisible.current = '';
+    scrollToHit();
+  }, [identity, hitVisible, scrollToHit]);
 
   useEffect(() => {
     setFullTextMode({ missionId: selected?.mission_id || '', enabled: false });
@@ -216,7 +235,7 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
         </div>
         <div className="reader-meta">
           {detail && <button className="text-button" aria-pressed={showFullText} title={showFullText ? '按需显示屏幕附近的对白，减少内存占用' : '渲染全部已加载对白，支持浏览器查找和辅助技术遍历，会占用更多内存'} onClick={() => setFullTextMode({ missionId: selected.mission_id, enabled: !showFullText })}>{showFullText ? '按需显示' : '显示全文'}</button>}
-          {hitId && detail && <button type="button" className="text-button locate-hit-button" onClick={() => scrollToHit('smooth')}>⌖ 定位命中原句</button>}
+          {hitGroup && <button type="button" className="text-button locate-hit-button" onClick={locateHit}>⌖ 定位命中原句</button>}
           {isAdmin && mission && <button className="text-button" onClick={() => setEditing(value => !value)}>补充版本</button>}
         </div>
       </div>
@@ -242,22 +261,22 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
           <span>{hasEarlier || hasMore ? '当前剧情上下文' : '任务台词本'}（当前路径 {visibleLines.length} 句）</span>
           <div className="reading-focusbar-actions">
             {hasCustomBranch && <button className="text-button" onClick={() => { setChoiceOverrides({ identity, selections: {} }); setAltOverrides({ identity, selections: {} }); }}>↺ 回到命中分支</button>}
-            {hitId && <button className="text-button" onClick={() => scrollToHit('smooth')}>⌖ 跳转到命中原句</button>}
           </div>
         </div>
+        {detail.anchor_missing && <p className="inline-alert" role="status">此快照中找不到链接指向的台词，已打开任务上下文。</p>}
         {hasEarlier && <button className="secondary load-context" onClick={onEarlier} disabled={busy}>加载更早上下文</button>}
         <div className="story-flow">
           {groups.map((group, groupIndex) => {
             const isBranchFollowup = Boolean(group.branch && selectedTriggers.has(JSON.stringify([group.script, group.branch])));
             const altSiblings = group.altSlot ? model.altGroups.get(group.altSlot) : undefined;
             const startsScene = groups[groupIndex - 1]?.script !== group.script;
-            const showExtraDivider = shouldShowTrailingExtraDivider(groups[groupIndex - 1]?.script, group.script, orderedScripts);
+            const showExtraDivider = shouldShowTrailingExtraDivider(groups[groupIndex - 1]?.script, group.script, orderedScripts, optionalScripts);
             const sceneLabel = sceneStatusLabel(group.script, group.lines[0]?.scene_label);
             return <div className={`story-segment ${isBranchFollowup ? 'branch-followup' : ''} ${altSiblings ? 'alt-branch-segment' : ''}`} key={group.key}>
               {showExtraDivider && (
-                <div className="scene-end-divider" role="separator" aria-label="以下为任务内零散补充对白">
+                <div className="scene-end-divider" role="separator" aria-label="任务内补充对白">
                   <span className="scene-end-line" aria-hidden="true" />
-                  <span className="scene-end-badge">以下为任务内零散补充对白（小游戏 / 场景气泡等）</span>
+                  <span className="scene-end-badge">任务内补充对白</span>
                   <span className="scene-end-line" aria-hidden="true" />
                 </div>
               )}

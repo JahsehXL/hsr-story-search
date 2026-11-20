@@ -5,7 +5,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from backend.data import VERIFIED_SCENES, get_catalog, get_mission, import_data, normalize_text, open_db, search_tokens
+from backend.data import VERIFIED_SCENES, _collapse_mirrored_scripts, get_catalog, get_mission, import_data, normalize_text, open_db, search_tokens
 from backend.data_maintenance import update_script_order
 from backend.search import _extract_content_terms, _score_fields, get_chunks, lexical_search, semantic_context_bonus
 
@@ -91,6 +91,8 @@ class DataTests(unittest.TestCase):
             self.assertTrue(matches, query)
             self.assertTrue(all(item["match_type"] in {"exact", "keyword"} for item in matches))
         self.assertTrue(lexical_search(first_db, "休息", {"character": "老杨"}))
+        scene_hit = lexical_search(first_db, "注意休息", {"character": "三月"}, limit=1)[0]
+        self.assertEqual((scene_hit["speaker"], scene_hit["sentence_id"], scene_hit["match_type"]), ("瓦尔特", "16", "exact"))
         self.assertTrue(lexical_search(first_db, "列车", {"character": "三月"}))
         self.assertEqual(lexical_search(first_db, "星穹列午"), [])
         fuzzy = lexical_search(first_db, "星穹列午", allow_fuzzy=True)
@@ -202,6 +204,9 @@ class DataTests(unittest.TestCase):
         self.assertEqual(set(_extract_content_terms("三月七给丹恒说隐藏实力")), {"三月七", "丹恒", "隐藏", "实力"})
         self.assertEqual(set(_extract_content_terms("丹恒与景元在幽囚狱交谈")), {"丹恒", "景元", "幽囚狱"})
         self.assertEqual(_score_fields("三月七给丹恒说用出隐藏实力", {"text": "丹恒……", "speaker": "三月七"}, allow_fuzzy=True)[0], 0.0)
+        consecutive_lines = {"text": "演出告一段落。\n被贪饕咬掉的脑袋。"}
+        self.assertNotEqual(_score_fields("告一段落被贪饕", consecutive_lines)[1], "exact")
+        self.assertEqual(_score_fields("被贪饕，咬掉", consecutive_lines)[1], "exact")
 
         terms = _extract_content_terms("卡芙卡在空间站唤醒开拓者")
         direct = semantic_context_bonus(terms, "卡芙卡：这儿？一个空间站，不重要。", {"world": "空间站「黑塔」"}, {"卡芙卡"})
@@ -339,6 +344,103 @@ class DataTests(unittest.TestCase):
             sw = conn.execute("SELECT sentence_id, position, branch, chunk_id FROM lines WHERE script='Config/Level/Mission/1/Act/ActSwitchRand.json' ORDER BY position").fetchall()
             self.assertEqual([(r[0], r[1], r[2]) for r in sw], [("220", 0, "sequence:0#alt:0#cond:1"), ("221", 100, "sequence:0#alt:0#cond:2"), ("222", 10000, "sequence:0#alt:1#rand:1"), ("223", 10100, "sequence:0#alt:1#rand:2")])
             self.assertEqual(len({r[3] for r in sw}), 4)
+
+    def test_authored_voice_ranges_and_debate_choices(self):
+        mission = 2022103
+        self.add_mission_with_sentences(mission, [
+            (222130227, "请选择质疑龙师"), (222130228, "龙师确有疑点"),
+            (222130244, "选择拒绝回答"), (222130245, "你可以保持沉默"),
+            (222130260, "回到开庭前的现场"), (222130261, "走向席位准备辩论"),
+            (901000001, "站在庭外的引路人"), (901000002, "重复录音的另一条文本"),
+            (902000001, "请进入内庭"), (903000001, "只用于动态取值"),
+            (904000001, "第二节点闲聊"), (904000002, "{TEXTJOIN#54}路过{TEXTJOIN#99}"),
+        ])
+        self.add_mission_with_sentences(1054000, [])
+        self.add_mission_with_sentences(1054001, [
+            (150014501, "主线开头"), (150014502, "被另一场演出复用的对白"),
+            (150014503, "主线中段"), (150014504, "主线收尾"),
+        ])
+        texts = json.loads((self.root / "TextMap/TextMapCHS.json").read_text(encoding="utf-8"))
+        texts["5400"] = "次元扑满"
+        self.write("TextMap/TextMapCHS.json", texts)
+        self.write("ExcelOutput/TextJoinItem.json", [{"TextJoinItemID": 540, "TextJoinText": {"Hash": 5400}}])
+        self.write("ExcelOutput/TextJoinConfig.json", [{"TextJoinID": 54, "DefaultItem": 540}])
+        self.assertEqual(normalize_text("<size=28><it>{NICKNAME}</it></size>"), "开拓者")
+        table = "ExcelOutput/TalkSentenceConfig.json"
+        sentences = json.loads((self.root / table).read_text(encoding="utf-8"))
+        for row in sentences:
+            voice_id = {901000001: 900, 901000002: 900, 902000001: 901, 150014502: 904}.get(row["TalkSentenceID"])
+            if voice_id:
+                row["VoiceID"] = voice_id
+            if row["TalkSentenceID"] == 904000002:
+                row["TextmapTalkSentenceName"] = {"Hash": 5401}
+                texts["5401"] = "{TEXTJOIN#54}"
+        self.write("TextMap/TextMapCHS.json", texts)
+        self.write(table, sentences)
+        self.simple_perf("Story/Mission/1054001/Story105400101.json", [150014501, 150014503])
+        self.write("Config/Level/Mission/1054000/Act/Act105400001.json", {"OnStartSequece": [
+            {"TaskList": [{"$type": "PlayVoice_Single", "VoiceID": 904}]},
+        ]})
+        chat_rel = "Config/Level/MunicipalChatConfig/F1054/Chat_1054000.json"
+        self.write(chat_rel, {
+            "StartNodeName": "Node1",
+            "NodeList": [
+                {"MunicipalNodeName": "Node0", "TransitionList": [], "ActionList": [{"$type": "RPG.GameCore.MunicipalChatActionTalk", "TalkSentenceID": 904000001}]},
+                {"MunicipalNodeName": "Node1", "TransitionList": [{"MunicipalNodeName": "Node0"}], "ActionList": [{"$type": "RPG.GameCore.MunicipalChatActionTalk", "TalkSentenceID": 904000002}]},
+            ],
+        })
+        self.write("Config/Level/Mission/1054000/Mission_105400002.json", {"OnStartSequece": [
+            {"TaskList": [{"$type": "RPG.GameCore.PlayMunicipalChat", "NewMunicipalChatConfigPath": chat_rel}]},
+        ]})
+        self.write("Story/Discussion/Mission/2022103/DS202210302.json", {"OnStartSequece": [
+            {"TaskList": [
+                {"$type": "PlayVoice", "VoiceIDs": [900, 903000001, 901]},
+                {"$type": "PlayMissionTalk", "StartSentenceID": {"IsDynamic": False, "FixedValue": {"Value": 222130260}},
+                 "EndSentenceID": {"FixedValue": {"Value": 222130261}}, "SimpleTalkList": [{"ProtectTime": 2}]},
+                {"$type": "PlayMissionTalk", "StartSentenceID": {"IsDynamic": True, "FixedValue": {"Value": 903000001}}},
+                {"$type": "ConvinceMoveTurn"},
+            ]},
+            *({"TaskList": [{"$type": "WaitCustomString", "CustomString": {"Value": f"TalkSentence_{sid}"}},
+                            {"$type": "ConvinceMoveTurn", "TurnIndex": -1}]}
+              for sid in (222130228, 222130245)),
+            {"TaskList": [
+                {"$type": "ConvinceWaitTurnBegin"},
+                {"$type": "ConvincePlayOptionTalk", "OptionList": [
+                    {"TalkSentenceID": 222130227, "TriggerCustomString": "TalkSentence_222130228"},
+                    {"TalkSentenceID": 222130244, "TriggerCustomString": "TalkSentence_222130245"},
+                ]},
+            ]},
+            {"TaskList": [{"$type": "ConvinceWaitAllTurnFinish"}]},
+        ]})
+        out = Path(self.temp.name) / "authored.db"
+        import_data(self.root, out)
+        hit = lexical_search(out, "选择拒绝回答", limit=1)[0]
+        detail = get_mission(out, str(mission), hit["line_id"])
+        self.assertEqual(detail["anchor_line_id"], hit["line_id"])
+        self.assertEqual([line["sentence_id"] for line in detail["lines"]], [
+            "902000001", "222130260", "222130261", "222130228", "222130245", "222130227", "222130244",
+        ])
+        self.assertEqual(hit["kind"], "option")
+        self.assertEqual({edge["target"] for edge in detail["edges"] if edge["kind"] == "option"},
+                         {"TalkSentence_222130228", "TalkSentence_222130245"})
+        self.assertEqual({(edge["source"], edge["target"]) for edge in detail["edges"] if edge["kind"] == "continuation"},
+                         {("sequence:0", "sequence:3"), ("TalkSentence_222130228", "sequence:4"),
+                          ("TalkSentence_222130245", "sequence:4")})
+
+        act = "Config/Level/Mission/2022103/Act/Act202210302.json"
+        mirrors = [{**line, "script": act, "id": "act-" + line["id"]} for line in reversed(detail["lines"])]
+        dup_unord = [{**line, "script": "Config/Level/Mission/2022103/Act/Act202210399.json", "id": "dup-" + line["id"]} for line in mirrors]
+        self.assertEqual(_collapse_mirrored_scripts(mirrors + dup_unord, ordered_scripts={act}), (mirrors, {"dup-" + l["id"]: l["id"] for l in mirrors}))
+        lines, aliases = _collapse_mirrored_scripts(mirrors + detail["lines"])
+        self.assertEqual(lines, mirrors)
+        self.assertEqual(aliases[hit["line_id"]], "act-" + hit["line_id"])
+        mirrors[0]["trigger"] = "different-answer"
+        self.assertEqual(_collapse_mirrored_scripts(mirrors + detail["lines"])[1], {})
+        self.assertEqual([line["sentence_id"] for line in get_mission(out, "1054001")["lines"]],
+                         ["150014501", "150014502", "150014503", "150014504"])
+        m1054 = get_mission(out, "1054000")["lines"]
+        self.assertEqual([line["sentence_id"] for line in m1054], ["150014502", "904000002", "904000001"])
+        self.assertEqual((m1054[1]["speaker"], m1054[1]["text"]), ("次元扑满", "次元扑满路过{TEXTJOIN#99}"))
 
     def test_timeline_calibration_and_verified_owners(self):
         missions = [
@@ -507,6 +609,7 @@ class DataTests(unittest.TestCase):
         # 1) 1054706-style DAG + FixedValue bubble + line.id/chunk preservation.
         self.add_mission_with_sentences(1054706, [
             (157063001, "人类的一分钟"), (157062802, "再走近些吧"), (157064201, "只是一个回答"), (157063201, "我要怎么回去呢"), (157063401, "这边"),
+            (157063301, "继续在车厢里探索"),
         ])
         s30, s28, s42, s32, s34 = (
             "Story/Discussion/Mission/1054706/DS105470630.json",
@@ -515,10 +618,12 @@ class DataTests(unittest.TestCase):
             "Story/Discussion/Mission/1054706/DS105470632.json",
             "Story/Mission/1054706/Story105470634.json",
         )
-        for rel, sid in ((s30, 157063001), (s42, 157064201), (s32, 157063201), (s34, 157063401)):
+        s33 = "Story/Discussion/Mission/1054706/DS105470633.json"
+        for rel, sid in ((s30, 157063001), (s42, 157064201), (s32, 157063201), (s34, 157063401), (s33, 157063301)):
             self.simple_perf(rel, [sid])
         self.write("ExcelOutput/PerformanceDS.json", [
             {"PerformanceID": 105470630, "PerformancePath": s30}, {"PerformanceID": 105470642, "PerformancePath": s42}, {"PerformanceID": 105470632, "PerformancePath": s32},
+            {"PerformanceID": 105470633, "PerformancePath": s33},
         ])
         self.write("ExcelOutput/PerformanceD.json", [{"PerformanceID": 105470634, "PerformancePath": s34}])
 
@@ -535,18 +640,24 @@ class DataTests(unittest.TestCase):
         ):
             self.simple_perf(f"{folder}/{prefix}{pid}.json", [sid])
 
-        # 3) AnySequence with multiple predecessors keeps both win/lose branches, ignores PlayVideo, honors VERIFIED_SCENE_ORDER.
-        self.add_mission_with_sentences(2022005, [(222050201, "比试前"), (222050601, "比试中"), (222050302, "彦卿赢"), (222050402, "云璃赢"), (222050501, "收尾")])
+        # 3) AnySequence with multiple predecessors keeps both win/lose branches, ignores PlayVideo & CS cutscenes, honors VERIFIED_SCENE_ORDER.
+        self.add_mission_with_sentences(2022005, [(222050201, "比试前"), (222050601, "比试中"), (222050302, "彦卿赢"), (222050402, "云璃赢"), (222050501, "收尾"), (222059901, "过场同号孤立对白")])
         for sc in ("Story/Discussion/Mission/2022005/DS202200502.json", "Story/Discussion/Mission/2022005/DS202200503.json",
                    "Story/Discussion/Mission/2022005/DS202200504.json", "Story/Mission/2022005/Story202200505.json", "Config/Level/Mission/2022005/Act/Act202200506.json"):
             self.write(sc, {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.PlayTimeline"}]}]})
+        self.simple_perf("Config/Level/Mission/2022005/Act/Act202200599.json", [222059901])
+        self.write("ExcelOutput/PerformanceA.json", [{"PerformanceID": 202200599, "PerformancePath": "Config/Level/Mission/2022005/CS202200599.json"}])
 
         self.write("Config/Level/Mission/1054706/MissionInfo_1054706.partial.json", {
-            "StartSubMissionList": [105470615],
+            "StartSubMissionList": [105470614],
             "SubMissionList": [
-                {"ID": 105470615, "TakeType": "Auto", "LevelFloorID": 10000000, "GroupIDList": [10]},
-                {"ID": 105470634, "TakeType": "AnySequence", "TakeParamIntList": [105470615], "LevelFloorID": 10000000, "GroupIDList": [11]},
-                {"ID": 105470635, "TakeType": "AnySequence", "TakeParamIntList": [105470634], "LevelFloorID": 10000000, "GroupIDList": [12]},
+                {"ID": 105470614, "TakeType": "Auto"},
+                {"ID": 105470615, "TakeType": "AnySequence", "TakeParamIntList": [105470614], "LevelFloorID": 10000000, "GroupIDList": [10],
+                 "FinishActionList": [{"FinishActionType": "delSubMission", "FinishActionPara": [105470634, 105470636, 105470616]}]},
+                {"ID": 105470616, "TakeType": "AnySequence", "TakeParamIntList": [105470615], "IsCanDelete": True, "LevelFloorID": 10000000, "GroupIDList": [13]},
+                {"ID": 105470634, "TakeType": "AnySequence", "TakeParamIntList": [105470614], "IsCanDelete": True, "LevelFloorID": 10000000, "GroupIDList": [11]},
+                {"ID": 105470635, "TakeType": "AnySequence", "TakeParamIntList": [105470616], "LevelFloorID": 10000000, "GroupIDList": [12]},
+                {"ID": 105470636, "TakeType": "AnySequence", "TakeParamIntList": [105470634], "IsCanDelete": True, "LevelFloorID": 10000000, "GroupIDList": [14]},
             ],
         })
         self.write("Config/Level/GroupGraph/F10000000/Group_F10000000_G10.json", {"OnStartSequece": [{"TaskList": [
@@ -554,11 +665,16 @@ class DataTests(unittest.TestCase):
         ]}]})
         self.write("Config/Level/GroupGraph/F10000000/Group_F10000000_G11.json", {"OnStartSequece": [{"TaskList": [
             {"$type": "RPG.GameCore.PlayMissionTalk", "StartSentenceID": {"FixedValue": {"Value": 157062800}}, "EndSentenceID": {"FixedValue": {"Value": 157062805}}},
+        ]}]})
+        self.write("Config/Level/GroupGraph/F10000000/Group_F10000000_G13.json", {"OnStartSequece": [{"TaskList": [
             {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470642},
         ]}]})
         self.write("Config/Level/GroupGraph/F10000000/Group_F10000000_G12.json", {"OnStartSequece": [{"TaskList": [
             {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470632},
             {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 105470634},
+        ]}]})
+        self.write("Config/Level/GroupGraph/F10000000/Group_F10000000_G14.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "DS", "PerformanceID": 105470633},
         ]}]})
 
         self.write("Config/Level/Mission/1034109/MissionInfo_1034109.json", {
@@ -601,14 +717,22 @@ class DataTests(unittest.TestCase):
             "FailedTaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 202200504}],
         }]}]})
         self.write("Config/Level/GroupGraph/F40235001/Group_F40235001_G19.json", {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "PlayVideo", "PerformanceID": 202200506}]}]})
-        self.write("Config/Level/GroupGraph/F40235001/Group_F40235001_G20.json", {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 202200505}]}]})
+        self.write("Config/Level/GroupGraph/F40235001/Group_F40235001_G20.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.PlayAndWaitSimpleTalk", "SimpleTalkList": [{"TalkSentenceID": 222059902}]},
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "A", "PerformanceID": 202200599},
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "D", "PerformanceID": 202200505},
+        ]}]})
 
         with_dag = Path(self.temp.name) / "with-dag.db"
         import_data(self.root, with_dag)
 
-        detail = get_mission(with_dag, "1054706")
-        self.assertEqual([line["script"] for line in detail["lines"]], [s30, s28, s42, s32, s34])
-        self.assertEqual(detail["ordered_scripts"], sorted([s30, s28, s42, s32, s34]))
+        optional_hit = lexical_search(with_dag, "再走近些吧", limit=1)[0]
+        self.assertEqual(optional_hit["script"], s28)
+        detail = get_mission(with_dag, "1054706", optional_hit["line_id"])
+        self.assertEqual([line["script"] for line in detail["lines"]], [s30, s42, s32, s34, s28, s33])
+        self.assertEqual(detail["ordered_scripts"], sorted([s30, s42, s32, s34]))
+        self.assertEqual(detail["optional_scripts"], [s28, s33])
+        self.assertEqual(detail["lines"][-2]["id"], detail["anchor_line_id"])
         with open_db(without_dag) as a, open_db(with_dag) as b:
             self.assertEqual(
                 list(a.execute("SELECT id FROM lines WHERE mission_id='1054706' ORDER BY id")),
@@ -621,8 +745,9 @@ class DataTests(unittest.TestCase):
 
         self.assertEqual([l["sentence_id"] for l in get_mission(with_dag, "1034109")["lines"]], ["3410901", "3410902", "3410903", "3410950"])
         contest = get_mission(with_dag, "2022005")
-        self.assertEqual([l["sentence_id"] for l in contest["lines"]], ["222050201", "222050601", "222050302", "222050402", "222050501"])
+        self.assertEqual([l["sentence_id"] for l in contest["lines"]], ["222050201", "222050601", "222050302", "222050402", "222050501", "222059901"])
         self.assertIn("Config/Level/Mission/2022005/Act/Act202200506.json::timeline-2220506", contest["ordered_scripts"])
+        self.assertNotIn("Config/Level/Mission/2022005/Act/Act202200599.json", contest["ordered_scripts"])
 
     def test_mission_dag_raid_zip_and_roundtrip(self):
         self.add_mission_with_sentences(1054706, [
