@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>星轨档案</title>
+  <style>
+    body { margin: 0; font: 16px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .startup { min-height: 100vh; box-sizing: border-box; padding: 22px; padding-top: calc(22px + var(--safe-area-inset-top, env(safe-area-inset-top, 0px))); background: #edf1f4; color: #182535; }
+    .startup h1 { margin: 0 0 18px; font-size: 20px; letter-spacing: 1px; }
+    .startup h1 span { color: #805922; }
+    .startup p { color: #566779; }
+    @media (prefers-color-scheme: dark) {
+      .startup { background: #101621; color: #f3f6fb; }
+      .startup h1 span { color: #eac994; }
+      .startup p { color: #b6c1d0; }
+    }
+  </style>
+  <link rel="stylesheet" href="./app.css">
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <div id="root">
+    <main class="startup">
+      <h1><span aria-hidden="true">✦</span> 星轨档案</h1>
+      <p>搜索台词、任务或角色，查看剧情出处和上下文。</p>
+      <noscript>请在支持小工具的小红书客户端中打开。</noscript>
+    </main>
+  </div>
+</body>
+</html>
