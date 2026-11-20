@@ -18,6 +18,7 @@ interface ReaderProps {
   onShare: (line?: DialogueLine) => void;
   onBack: () => void;
   onVersionSave: (version: string, source: string, status: string) => Promise<void>;
+  onOpenCurrentForVersion?: () => void;
   onExpand?: () => void;
   onMore: () => void;
   onEarlier: () => void;
@@ -82,7 +83,7 @@ function ChoiceCard({ choice, selectedId, hitId, query, onChoose, onShare }: {
   </section>;
 }
 
-export default function Reader({ selected, detail, busy, query, error, isAdmin, bookmarked, onBookmark, onCopy, onShare, onBack, onVersionSave, onMore, onEarlier }: ReaderProps) {
+export default function Reader({ selected, detail, busy, query, isAdmin, bookmarked, onBookmark, onCopy, onShare, onBack, onVersionSave, onOpenCurrentForVersion, error, onMore, onEarlier }: ReaderProps) {
   const [editing, setEditing] = useState(false);
   const [version, setVersion] = useState('');
   const [source, setSource] = useState('');
@@ -168,7 +169,7 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
     setVersionState(mission?.version_status === 'inferred' ? 'inferred' : 'verified');
     setEditing(false);
     setSaveError('');
-  }, [mission?.id, mission?.version, mission?.version_source, mission?.version_status]);
+  }, [detail?.snapshot, mission?.id, mission?.version, mission?.version_source, mission?.version_status]);
 
   useEffect(() => {
     if (!detail) {
@@ -236,14 +237,16 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
         <div className="reader-meta">
           {detail && <button className="text-button" aria-pressed={showFullText} title={showFullText ? '按需显示屏幕附近的对白，减少内存占用' : '渲染全部已加载对白，支持浏览器查找和辅助技术遍历，会占用更多内存'} onClick={() => setFullTextMode({ missionId: selected.mission_id, enabled: !showFullText })}>{showFullText ? '按需显示' : '显示全文'}</button>}
           {hitGroup && <button type="button" className="text-button locate-hit-button" onClick={locateHit}>⌖ 定位命中原句</button>}
-          {isAdmin && mission && <button className="text-button" onClick={() => setEditing(value => !value)}>补充版本</button>}
+          {isAdmin && mission && (onOpenCurrentForVersion
+            ? <button className="text-button" onClick={onOpenCurrentForVersion}>打开当前快照编辑</button>
+            : <button className="text-button" onClick={() => setEditing(value => !value)}>补充版本</button>)}
         </div>
       </div>
       <div className="reader-title-row">
         <h1>{name}</h1>
         <button className={`icon-button bookmark-button ${bookmarked ? 'is-saved' : ''}`} title={bookmarked ? '取消收藏命中结果' : '收藏命中结果'} aria-label={bookmarked ? '取消收藏命中结果' : '收藏命中结果'} onClick={onBookmark}>{bookmarked ? '★' : '☆'}</button>
       </div>
-      {editing && <form className="version-editor" onSubmit={async event => {
+      {editing && !onOpenCurrentForVersion && <form className="version-editor" onSubmit={async event => {
         event.preventDefault(); setSaving(true); setSaveError('');
         try { await onVersionSave(version, source, versionState); setEditing(false); }
         catch (failure) { setSaveError(errorText(failure)); }
@@ -252,8 +255,9 @@ export default function Reader({ selected, detail, busy, query, error, isAdmin, 
         <label className="field"><span>开放版本</span><input value={version} onChange={event => setVersion(event.target.value)} placeholder="例如 2.0" required={versionState === 'verified'} /></label>
         <label className="field"><span>依据链接或说明</span><input value={source} onChange={event => setSource(event.target.value)} placeholder="官方公告链接或核验说明" required={versionState === 'verified'} /></label>
         <label className="field"><span>核验状态</span><select value={versionState} onChange={event => setVersionState(event.target.value)}><option value="verified">已核实</option><option value="inferred">推定</option><option value="unknown">待核实</option></select></label>
-        <button className="primary" disabled={saving}>{saving ? '保存中…' : '保存标注'}</button>{saveError && <p className="error-message" role="alert">{saveError}</p>}
+        <button className="primary" disabled={saving}>{saving ? '保存中…' : '保存标注'}</button>
       </form>}
+      {saveError && <p className="error-message" role="alert">{saveError}</p>}
     </header>
     <div className="reader-scroll" ref={scrollRef} aria-busy={busy}>
       {busy && !detail ? <div className="reading-skeleton"><div /><div /><div /></div> : error ? <Empty symbol="!" title="暂时无法打开这段剧情"><p>{error}</p></Empty> : detail ? <>

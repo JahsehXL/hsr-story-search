@@ -135,6 +135,10 @@ class JobCancelled(Exception):
     pass
 
 
+class SnapshotChangedError(ValueError):
+    pass
+
+
 class Runtime:
     def __init__(self, root: Path, mode: str):
         self.root = root.resolve()
@@ -921,11 +925,15 @@ class Runtime:
             self.active_path(previous)
             atomic_json(pointer, {"snapshot": previous, "previous": value["snapshot"]})
 
-    def update_mission(self, identifier: str, version: str, source: str, status: str) -> str:
+    def update_mission(
+        self, identifier: str, version: str, source: str, status: str, *, expected_snapshot: str | None = None,
+    ) -> str:
         with self.lock:
-            path, _ = self.active_path()
+            path, snapshot = self.active_path()
             if not path:
                 raise ValueError("请先导入数据")
+            if expected_snapshot is not None and expected_snapshot != snapshot:
+                raise SnapshotChangedError("当前数据快照已变化，请重新搜索并打开任务后再保存标注")
             if status not in {"unknown", "verified", "inferred"}:
                 raise ValueError("版本核验状态无效")
             if status == "verified" and (not version or not source):

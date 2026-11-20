@@ -13,6 +13,7 @@ import secrets
 import sys
 import threading
 import time
+import zipfile
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -27,7 +28,7 @@ from starlette.concurrency import run_in_threadpool
 from .cloudflare_access import AccessDenied, AccessVerifier
 from .embeddings import EmbeddingError, embed
 from .feedback import FeedbackFullError, FeedbackRateLimitError, MAX_ATTACHMENT_BYTES
-from .runtime import Runtime, db_connect
+from .runtime import Runtime, SnapshotChangedError, db_connect
 from .settings import atomic_json
 
 from . import __version__ as VERSION
@@ -98,6 +99,7 @@ class MissionUpdate(BaseModel):
     version: str = Field(default="", max_length=40)
     source: str = Field(default="", max_length=1000)
     status: str = "unknown"
+    snapshot: str | None = Field(default=None, max_length=24)
 
 
 class UploadStart(BaseModel):
@@ -585,7 +587,13 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
         size = json.loads(metadata.read_text(encoding="utf-8"))["size"]
         complete = runtime.root / "uploads" / (identifier + ".zip")
         partial = runtime.root / "uploads" / (identifier + ".part")
-        offset = complete.stat().st_size if complete.exists() else partial.stat().st_size if partial.exists() else 0
+        offset = partial.stat().st_size if partial.exists() else 0
+        if offset == size and not complete.exists():
+            if not zipfile.is_zipfile(partial):
+                raise ValueError("此上传未能生成有效的 ZIP，请重新开始上传")
+            os.replace(partial, complete)
+        if complete.exists():
+            offset = complete.stat().st_size
         return {"upload_id": identifier, "offset": offset, "size": size, "complete": complete.is_file()}
 
     @app.get("/api/v1/admin/upload/{identifier}")
@@ -607,12 +615,18 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             if offset + len(block) > state["size"]:
                 raise ValueError("分块超过声明的文件大小")
             partial = runtime.root / "uploads" / (identifier + ".part")
-            with partial.open("ab") as output:
-                output.write(block)
-            if partial.stat().st_size == state["size"]:
-                if not __import__("zipfile").is_zipfile(partial):
-                    raise ValueError("请选择有效的 ZIP 数据文件")
-                os.replace(partial, partial.with_suffix(".zip"))
+            try:
+                with partial.open("ab", buffering=0) as output:
+                    if output.write(block) != len(block):
+                        raise OSError("incomplete upload write")
+                if offset + len(block) == state["size"] and not zipfile.is_zipfile(partial):
+                    raise ValueError("文件未通过 ZIP 校验，可重试最后一个分块")
+            except (OSError, ValueError) as exc:
+                if partial.exists():
+                    os.truncate(partial, offset)
+                if isinstance(exc, OSError):
+                    raise HTTPException(503, "无法写入上传分块，请检查服务端存储后重试") from exc
+                raise
             return upload_state(identifier)
 
     @app.post("/api/v1/admin/upload")
@@ -626,7 +640,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                 if size > 4 * 1024**3:
                     raise HTTPException(413, "上传大小超过 4 GiB")
                 output.write(block)
-        if not __import__("zipfile").is_zipfile(destination):
+        if not zipfile.is_zipfile(destination):
             raise ValueError("请选择 ZIP 数据文件")
         return {"upload_id": identifier, "size": size}
 
@@ -637,7 +651,12 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
 
     @app.put("/api/v1/admin/missions/{identifier}")
     def update_mission(identifier: str, payload: MissionUpdate, user=Depends(administrator)):
-        snapshot = runtime.update_mission(identifier, payload.version.strip(), payload.source.strip(), payload.status)
+        try:
+            snapshot = runtime.update_mission(
+                identifier, payload.version.strip(), payload.source.strip(), payload.status, expected_snapshot=payload.snapshot,
+            )
+        except SnapshotChangedError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {"ok": True, "snapshot": snapshot}
 
     @app.get("/api/v1/admin/diagnostics")

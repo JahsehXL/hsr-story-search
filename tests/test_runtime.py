@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -154,11 +155,17 @@ class AuthTests(unittest.TestCase):
                 self.assertEqual(before.status_code, 200)
                 self.assertEqual(before.json()["snapshot"], snapshot)
                 mission = before.json()["results"][0]["mission_id"]
-                runtime.update_mission(mission, "9.9", "test source", "verified")
+                endpoint = f"/api/v1/admin/missions/{mission}"
+                update = {"version": "9.9", "source": "test source", "status": "verified", "snapshot": snapshot}
+                saved = client.put(endpoint, json=update)
+                self.assertEqual(saved.status_code, 200)
+                rejected = client.put(endpoint, json={**update, "version": "8.8"})
+                self.assertEqual(rejected.status_code, 409)
                 pinned = client.post("/api/v1/search", json={"query": "列车", "mode": "text", "snapshot": snapshot}).json()
                 current = client.post("/api/v1/search", json={"query": "列车", "mode": "text"}).json()
                 self.assertEqual(pinned["snapshot"], snapshot)
                 self.assertNotEqual(current["snapshot"], snapshot)
+                self.assertEqual(current["snapshot"], saved.json()["snapshot"])
                 self.assertNotEqual(pinned["results"][0]["version"], "9.9")
                 self.assertEqual(current["results"][0]["version"], "9.9")
 
@@ -179,10 +186,37 @@ class AuthTests(unittest.TestCase):
                 self.assertEqual((first.status_code, first.json()["offset"], first.json()["complete"]), (200, midpoint, False))
                 self.assertEqual(client.put(route + "?offset=0", content=content[:midpoint]).status_code, 409)
                 self.assertEqual(client.get(route).json()["offset"], midpoint)
+                original_open = Path.open
+                partial_name = state["upload_id"] + ".part"
+
+                @contextmanager
+                def interrupted_write(path, *args, **kwargs):
+                    with original_open(path, *args, **kwargs) as output:
+                        class PartialWriter:
+                            def write(self, block):
+                                output.write(block[:3])
+                                raise OSError("disk full")
+                        yield PartialWriter()
+
+                def open_file(path, *args, **kwargs):
+                    if path.name == partial_name and args == ("ab",):
+                        return interrupted_write(path, *args, **kwargs)
+                    return original_open(path, *args, **kwargs)
+
+                with patch.object(Path, "open", open_file):
+                    interrupted = client.put(route + f"?offset={midpoint}", content=content[midpoint:])
+                self.assertEqual(interrupted.status_code, 503)
+                self.assertEqual(client.get(route).json()["offset"], midpoint)
+                bad = client.put(route + f"?offset={midpoint}", content=bytes(len(content) - midpoint))
+                self.assertEqual(bad.status_code, 400)
+                self.assertEqual(client.get(route).json()["offset"], midpoint)
                 last = client.put(route + f"?offset={midpoint}", content=content[midpoint:])
                 self.assertTrue(last.json()["complete"])
                 self.assertEqual(client.get(route).json()["offset"], len(content))
                 self.assertEqual((Path(directory) / "uploads" / (state["upload_id"] + ".zip")).read_bytes(), content)
+                recovered = client.post("/api/v1/admin/upload/start", json={"size": len(content)}).json()
+                (Path(directory) / "uploads" / (recovered["upload_id"] + ".part")).write_bytes(content)
+                self.assertTrue(client.get("/api/v1/admin/upload/" + recovered["upload_id"]).json()["complete"])
 
     def test_bootstrap_origin_explicit_mode_role_separation_and_upload_limits(self):
         from starlette.formparsers import MultiPartParser

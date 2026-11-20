@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from pathlib import Path
 
 from rapidfuzz.distance import LCSseq
@@ -260,13 +261,17 @@ def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False, filter
         m.name mission_name,m.chapter,m.world,m.type,m.version,m.version_status,m.version_source
         FROM chunks c JOIN missions m ON m.id=c.mission_id WHERE c.id IN ({placeholders})
         AND c.script!='unlinked' AND c.mission_id!='unlinked'""", ids).fetchall()
+    lines_by_chunk = defaultdict(list)
+    for line in conn.execute(f"""SELECT chunk_id,id,sentence_id,speaker,text,search_text,kind
+        FROM lines WHERE chunk_id IN ({placeholders}) ORDER BY chunk_id,position""", ids):
+        lines_by_chunk[line["chunk_id"]].append(line)
     results = []
     variants = expand_query(query) if query else [""]
     content_by_variant = {variant: _extract_content_terms(variant) for variant in variants}
     topics_by_variant = {variant: _scene_description(terms)[1] for variant, terms in content_by_variant.items()}
     for row in rows:
         item = dict(row)
-        lines = conn.execute("SELECT id,sentence_id,speaker,text,search_text,kind FROM lines WHERE chunk_id=? ORDER BY position", (item["chunk_id"],)).fetchall()
+        lines = lines_by_chunk.get(item["chunk_id"], ())
         line_scores = []
         for idx, line in enumerate(lines):
             spk_ok = 1 if _speaker_matches_filter(line["speaker"], expanded_chars) else 0

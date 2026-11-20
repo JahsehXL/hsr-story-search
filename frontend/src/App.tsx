@@ -442,6 +442,7 @@ export default function App() {
   const [detail, setDetail] = useState<MissionResponse | null>(null);
   const [reading, setReading] = useState(false);
   const [readerError, setReaderError] = useState('');
+  const [readerQuery, setReaderQuery] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
@@ -491,6 +492,7 @@ export default function App() {
     setDetail(null);
     setReading(false);
     setReaderError('');
+    setReaderQuery('');
   }, []);
   useEffect(() => () => {
     searchId.current++;
@@ -518,15 +520,15 @@ export default function App() {
     return () => { alive = false; };
   }, [readable, status?.data.snapshot]);
 
-  const selectResult = useCallback(async (result: Result, snapshot?: string, updateRoute = true) => {
+  const selectResult = useCallback(async (result: Result, snapshot?: string, updateRoute = true, routeQuery = searchedQuery) => {
     const generation = ++readerId.current;
     readerController.current?.abort();
     const controller = new AbortController();
     readerController.current = controller;
-    setSelected(result); setDetail(null); setReaderError('');
+    setSelected(result); setDetail(null); setReaderError(''); setReaderQuery(routeQuery);
     if (updateRoute) {
       const p = new URLSearchParams();
-      if (searchedQuery) p.set('q', searchedQuery);
+      if (routeQuery) p.set('q', routeQuery);
       if (result.mission_id) p.set('mission', result.mission_id);
       if (result.line_id) p.set('line', result.line_id);
       if (result.script) p.set('script', result.script);
@@ -615,7 +617,7 @@ export default function App() {
       clearReader();
       if (route.mission) {
         const result: Result = { chunk_id: 0, mission_id: route.mission, mission_name: '', chapter: '', world: '', version: '', version_status: 'unknown', speaker: '', text: '', line_id: route.line, script: route.script, branch: '', match_type: '', score: 0 };
-        void selectResult(result, route.snapshot, false);
+        void selectResult(result, route.snapshot, false, route.query);
       } else if (route.query) void runSearch(route.query);
     }
     if (!booted.current) {
@@ -634,7 +636,7 @@ export default function App() {
   function share(line?: DialogueLine) {
     if (!selected) return;
     const params = new URLSearchParams({ mission: selected.mission_id, line: line?.id || selected.line_id, script: line?.script || selected.script });
-    if (searchedQuery) params.set('q', searchedQuery);
+    if (readerQuery) params.set('q', readerQuery);
     if (detail?.snapshot || response?.snapshot) params.set('snapshot', detail?.snapshot || response!.snapshot);
     void copy(`${location.origin}${location.pathname}#/search?${params}`);
   }
@@ -643,15 +645,30 @@ export default function App() {
   function toggleBookmark() {
     if (!selected) return;
     const result = { ...selected, mission_name: detail?.mission.name || selected.mission_name, chapter: detail?.mission.chapter || selected.chapter };
-    setBookmarks(old => bookmarked ? old.filter(b => b.key !== bookmarkKey) : [{ key: bookmarkKey, result, query: searchedQuery, saved_at: new Date().toISOString(), snapshot: detail?.snapshot || response?.snapshot }, ...old]);
+    setBookmarks(old => bookmarked ? old.filter(b => b.key !== bookmarkKey) : [{ key: bookmarkKey, result, query: readerQuery, saved_at: new Date().toISOString(), snapshot: detail?.snapshot || response?.snapshot }, ...old]);
     setToast(bookmarked ? '已取消收藏' : '已收藏到当前浏览器');
   }
   async function saveVersion(version: string, source: string, state: string) {
-    if (!selected) return;
-    const saved = await request<{ snapshot: string }>(`admin/missions/${encodeURIComponent(selected.mission_id)}`, { method: 'PUT', body: JSON.stringify({ version, source, status: state }) });
-    setResponse(old => old ? { ...old, snapshot: saved.snapshot, results: old.results.map(r => r.mission_id === selected.mission_id ? { ...r, version, version_status: state } : r) } : old);
-    await selectResult({ ...selected, version, version_status: state }, saved.snapshot);
-    setToast('版本标注已保存'); await refresh();
+    if (!selected || !detail?.snapshot) return;
+    const generation = readerId.current;
+    const previousSnapshot = detail.snapshot;
+    let saved: { snapshot: string };
+    try {
+      saved = await request<{ snapshot: string }>(`admin/missions/${encodeURIComponent(selected.mission_id)}`, {
+        method: 'PUT', body: JSON.stringify({ version, source, status: state, snapshot: previousSnapshot }),
+      });
+    } catch (error) {
+      void refresh().catch(() => {});
+      throw error;
+    }
+    setResponse(old => old && old.snapshot === previousSnapshot
+      ? { ...old, snapshot: saved.snapshot, results: old.results.map(r => r.mission_id === selected.mission_id ? { ...r, version, version_status: state } : r) }
+      : old);
+    if (generation === readerId.current) {
+      await selectResult({ ...selected, version, version_status: state }, saved.snapshot, true, readerQuery);
+    }
+    setToast('版本标注已保存');
+    void refresh().catch(() => {});
   }
   async function moreContext(before = false) {
     if (!selected || !detail || reading) return;
@@ -747,7 +764,10 @@ export default function App() {
         </button>; })}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
       </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>
     </section>
-    <Reader selected={selected} detail={detail} busy={reading} query={searchedQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={clearReader} onVersionSave={saveVersion} onMore={() => void moreContext()} onEarlier={() => void moreContext(true)} />
+    <Reader selected={selected} detail={detail} busy={reading} query={readerQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={clearReader} onVersionSave={saveVersion}
+      onOpenCurrentForVersion={selected && status.data.snapshot && detail?.snapshot && detail.snapshot !== status.data.snapshot
+        ? () => void selectResult(selected, status.data.snapshot, true, readerQuery) : undefined}
+      onMore={() => void moreContext()} onEarlier={() => void moreContext(true)} />
     </main>
     {showModeHelp && <Modal title="搜索模式说明" close={() => setShowModeHelp(false)}>
       <div className="mode-help-modal">
@@ -794,7 +814,7 @@ export default function App() {
           text: selected?.display_text || selected?.text || '',
           script: selected?.script || '',
           branch: selected?.branch || '',
-          query: searchedQuery || query.trim(),
+          query: (selected ? readerQuery : searchedQuery) || query.trim(),
           mode,
         } : null}
         onSuccess={() => {
@@ -807,7 +827,7 @@ export default function App() {
     </Modal>}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}
     {showSettings && <Modal title="档案管理" close={() => setShowSettings(false)} wide><Suspense fallback={<p role="status">正在加载管理工具…</p>}><Admin status={status} onRefresh={() => refresh()} onToast={setToast} /></Suspense></Modal>}
-    {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setSearchedQuery(bookmark.query); setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{displayText(bookmark.result.display_text || bookmark.result.text) || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
+    {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot, true, bookmark.query); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{displayText(bookmark.result.display_text || bookmark.result.text) || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
     {toast && <div className="toast" role="status">{toast}</div>}
   </div>;
 }
