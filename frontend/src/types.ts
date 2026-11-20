@@ -69,7 +69,12 @@ export interface Status {
 export interface Filters { world: string; version: string; type: string; character: string }
 export type SearchMode = 'text' | 'hybrid' | 'fuzzy';
 export interface Catalog { worlds: string[]; versions: string[]; types: string[]; characters: string[] }
+export interface DialogueOrigin {
+  title: string;
+  origins: { kind: 'trigger' | 'shared_config' | 'workflow'; name: string; task_version?: string }[];
+}
 export interface Result {
+  dialogue_origin?: DialogueOrigin;
   chunk_id: number;
   mission_id: string;
   mission_name: string;
@@ -109,6 +114,7 @@ export interface Mission {
   version_status: string;
 }
 export interface DialogueLine {
+  dialogue_origin?: DialogueOrigin;
   scene_label?: string;
   id: string;
   mission_id: string;

@@ -79,7 +79,11 @@ def test_main_textmap_and_wrapper_build_preserve_source_and_old_database(source,
     graph = "Config/Level/Mission/1/MissionInfo_1.json"
     write_json(source, graph, {"StartSubMissionList": [101]})
     graph_report = inspect_source(source)
-    assert graph_report["input_fingerprint_version"] == 2
+    assert graph_report["input_fingerprint_version"] == 3
+    write_json(source, "Config/SpecialMissionIDPair.json", {"PairList": [
+        {"MainMissionID": 1, "SubMissionIDList": [101]},
+    ]})
+    assert inspect_source(source)["input_sha256"] != graph_report["input_sha256"]
     assert graph_report["input_files"] == report["input_files"] + 1
     write_json(source, graph, {"StartSubMissionList": [102]})
     assert inspect_source(source)["input_sha256"] != graph_report["input_sha256"]

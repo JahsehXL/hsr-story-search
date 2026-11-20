@@ -201,6 +201,11 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
 .result-chapter { font-size: 12px; font-weight: 400; color: var(--subtle); }
 .result-text { color: var(--text); line-height: 1.65; font-size: 13px; margin: 6px 0 8px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .result-text strong { display: inline-block; color: var(--accent); font-size: 12px; font-weight: 600; margin-right: 8px; padding: 0 6px; border-radius: 4px; background: var(--accent-soft); }
+.result-origins { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.dialogue-origins { margin: 8px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.dialogue-origins strong { color: var(--text-strong); }
+.dialogue-origins ul { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0; margin: 4px 0 0; list-style: none; }
+.dialogue-origins li span { color: var(--accent); }
 .result-bottom { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--subtle); font-size: 11px; }
 .result-open { color: var(--muted); font-weight: 500; }
 .result-card:hover .result-open { color: var(--accent); }

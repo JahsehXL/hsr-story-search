@@ -2,7 +2,7 @@
   "schema_version": 1,
   "generated_at": "2026-11-13T11:46:47.080732+00:00",
   "description": "Verified task release versions (1.0 - 4.7).",
-  "attribution": "BWIKI contributors, CC BY-NC-SA 4.0. Each record links its source task or chapter page.",
+  "attribution": "BWIKI contributors, CC BY-NC-SA 4.0 for wiki records. Each record links its evidence.",
   "coverage": {
     "named_missions": 2866,
     "verified_missions": 2866,
@@ -13621,10 +13621,10 @@
       "chapter": "",
       "world": "翁法罗斯",
       "type": "支线任务",
-      "version": "3.0",
-      "source": "https://wiki.biligame.com/sr/%E5%B7%B4%E7%89%B9%E9%B2%81%E6%96%AF%E6%B7%BB%E5%A0%B5%E8%AE%B0",
-      "retrieved_at": "2026-11-13",
-      "method": "bwiki-world-release",
+      "version": "3.6",
+      "source": "https://www.bilibili.com/video/BV1Z3nEzJEp2/",
+      "retrieved_at": "2026-11-20",
+      "method": "versioned-gameplay-recording",
       "status": "verified",
       "wiki_type": "支线任务"
     },

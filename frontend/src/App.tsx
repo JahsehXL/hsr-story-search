@@ -748,18 +748,20 @@ export default function App() {
         {searchError && <div className="inline-alert" role="alert">{searchError}</div>}
         {response?.notice && <div className="search-notice">{response.notice}</div>}
         {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{(mode === 'hybrid' ? ['流萤带开拓者逛游乐园', '丹恒与景元在幽囚狱交谈', '卡芙卡在空间站唤醒开拓者'] : ['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨']).map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : response.results.length === 0 ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{response.results.map((result, index) => {
-          const title = cleanMissionName(result.mission_name, result.chapter, result.world);
+          const origin = result.dialogue_origin;
+          const title = origin?.title || cleanMissionName(result.mission_name, result.chapter, result.world);
           return <button className={`result-card ${selected?.line_id === result.line_id && selected?.script === result.script ? 'selected' : ''}`} key={`${result.chunk_id}:${result.line_id}:${index}`} onClick={() => void selectResult(result, response.snapshot)}>
           <div className="result-topline">
             <div className="result-badges">
-              {result.type && <span className={`mission-badge type-${missionTypeClass(result.type)}`}>{labels[result.type] || result.type}</span>}
+              {!origin && result.type && <span className={`mission-badge type-${missionTypeClass(result.type)}`}>{labels[result.type] || result.type}</span>}
               <span className="world-badge">{result.world || '剧情对白'}</span>
               {result.kind?.includes('option') && <span className="option-badge">❖ 玩家选项</span>}
             </div>
-            <span className={!result.version ? 'pending-version' : 'version-tag'}>{versionText(result.version, result.version_status)}</span>
+            <span className={origin || !result.version ? 'pending-version' : 'version-tag'}>{origin ? '对白版本待核实' : versionText(result.version, result.version_status)}</span>
           </div>
-          <h3>{title}{result.chapter && result.chapter !== title && <small className="result-chapter"> · {result.chapter}</small>}</h3>
+          <h3>{title}{!origin && result.chapter && result.chapter !== title && <small className="result-chapter"> · {result.chapter}</small>}</h3>
           <p className="result-text"><strong>{result.kind?.includes("option") ? "❖ 开拓者选项" : speakerName(result.speaker)}</strong><span><Highlight text={result.display_text || result.text} query={searchedQuery} /></span></p>
+          {origin && <p className="result-origins">多个出处 · {origin.origins.map(item => item.name).join(' / ')}</p>}
           <div className="result-bottom"><span>{matchLabel(result)}</span><span className="result-open">阅读上下文 <span>→</span></span></div>
         </button>; })}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
       </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>

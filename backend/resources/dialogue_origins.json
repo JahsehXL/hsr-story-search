@@ -1,0 +1,38 @@
+{
+  "Config/Level/Mission/4015101/Act/Act401510100.json": {
+    "sentence_ids": ["401510101"],
+    "title": "导航罗盘·时刻表提示",
+    "origins": [
+      {"kind": "shared_config", "name": "仙舟罗浮·导航罗盘"},
+      {"kind": "shared_config", "name": "模拟宇宙·冒险房间的罗盘谜题"},
+      {"kind": "workflow", "name": "扶灵游贾，仗剑新卒", "task_version": "1.0"},
+      {"kind": "workflow", "name": "商铺事件·美馔阁", "task_version": "1.3"}
+    ]
+  },
+  "Config/Level/Mission/5010305/Act/Act501030501.json": {
+    "sentence_ids": ["501030501", "501030502", "501030503"],
+    "title": "磐岩镇·奥列格致谢",
+    "origins": [
+      {"kind": "trigger", "name": "磐岩镇·奥列格首次交谈"},
+      {"kind": "workflow", "name": "我的挚爱，我的血肉", "task_version": "1.3"},
+      {"kind": "workflow", "name": "超链接对决！奥列格", "task_version": "1.4"}
+    ]
+  },
+  "Config/Level/Mission/5010305/Act/Act501030502.json": {
+    "sentence_ids": ["501030527", "501030528"],
+    "title": "磐岩镇·奥列格再次问候",
+    "origins": [
+      {"kind": "trigger", "name": "磐岩镇·奥列格再次交谈"},
+      {"kind": "workflow", "name": "我的挚爱，我的血肉", "task_version": "1.3"},
+      {"kind": "workflow", "name": "超链接对决！奥列格", "task_version": "1.4"}
+    ]
+  },
+  "Config/Level/Mission/5035100/Act/Act503510001.json": {
+    "sentence_ids": ["503500365", "503500366", "503500367", "503500368"],
+    "title": "匹诺康尼·粉丝聊演出",
+    "origins": [
+      {"kind": "trigger", "name": "黄金的时刻·街头粉丝"},
+      {"kind": "trigger", "name": "「白日梦」酒店·梦境中的粉丝"}
+    ]
+  }
+}

@@ -1,9 +1,11 @@
+import hashlib
 import json
 import shutil
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.data import VERIFIED_SCENES, _collapse_mirrored_scripts, get_catalog, get_mission, import_data, normalize_text, open_db, search_tokens
 from backend.data_maintenance import update_script_order
@@ -67,6 +69,204 @@ class DataTests(unittest.TestCase):
             "$type": "RPG.GameCore.PlayAndWaitSimpleTalk",
             "SimpleTalkList": [{"TalkSentenceID": sid} for sid in sentence_ids],
         }]}]})
+
+    def test_cross_mission_submissions_keep_search_and_reader_in_the_triggering_mission(self):
+        source_id, destination_id = 1098901, 1098902
+        sub_id, performance_id, linked_id = 109890103, 109890107, 109890108
+        self.add_mission_with_sentences(source_id, [(501, "先调查港口。"), (502, "看看是谁开的门。"), (503, "这是任务图的对白。")])
+        self.add_mission_with_sentences(destination_id, [(504, "这是演出关联表的对白。")])
+        graph = f"Config/Level/Mission/{source_id}/Mission_{sub_id}.json"
+        act = f"Config/Level/Mission/{source_id}/Act/Act{performance_id}.json"
+        story = f"Story/Mission/{source_id}/Story{performance_id}.json"
+        linked = f"Story/Discussion/Mission/{source_id}/DS{linked_id}.json"
+
+        self.write("Config/SpecialMissionIDPair.json", {"PairList": [
+            {"MainMissionID": destination_id, "SubMissionIDList": [sub_id]},
+        ]})
+        self.write(f"Config/Level/Mission/{destination_id}/MissionInfo_{destination_id}.partial.json", {
+            "SubMissionList": [{"ID": sub_id, "MainMissionID": destination_id, "MissionJsonPath": graph}],
+        })
+        self.write(graph, {"Type": "Mission", "OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "C", "PerformanceID": performance_id},
+            {"$type": "RPG.GameCore.PlayAndWaitSimpleTalk", "SimpleTalkList": [{"TalkSentenceID": 503}]},
+        ]}]})
+        self.write("ExcelOutput/PerformanceC.json", [{"PerformanceID": performance_id, "PerformancePath": story}])
+        self.write("ExcelOutput/PerformanceDS.json", [{"PerformanceID": linked_id, "PerformancePath": linked}])
+        self.write("ExcelOutput/PerformanceSubMissionLink.json", [
+            {"SubMissionID": sub_id, "PerformanceType": "DS", "PerformanceID": linked_id},
+        ])
+        self.simple_perf(act, [501, 502])
+        self.simple_perf(story, [502])
+        self.simple_perf(linked, [504])
+
+        db = Path(self.temp.name) / "cross-mission.db"
+        import_data(self.root, db)
+        with open_db(db) as conn:
+            owners = {row["script"]: row["mission_id"] for row in conn.execute(
+                "SELECT DISTINCT script, mission_id FROM lines WHERE sentence_id IN ('501','502','503','504')"
+            )}
+        mid = str(destination_id)
+        self.assertEqual(owners, dict.fromkeys((graph, act, story, linked), mid))
+        hits = lexical_search(db, "看看是谁开的门")
+        self.assertTrue(hits)
+        for hit in hits:
+            self.assertEqual(hit["mission_id"], mid)
+            detail = get_mission(db, mid, line_id=hit["line_id"])
+            self.assertFalse(detail["anchor_missing"])
+            self.assertEqual(sum(line["sentence_id"] == "502" for line in detail["lines"]), 1)
+            self.assertIn(act, detail["ordered_scripts"])
+
+    def test_moved_timeline_recovers_bounded_dialogue_when_another_mission_reuses_its_prefix(self):
+        asset_mission, owner = 1000201, 1000101
+        sub_id, performance_id = 100020103, 100020104
+        first, gap, last, reused = 100020401, 100020402, 100020403, 100020404
+        self.add_mission_with_sentences(asset_mission, [
+            (first, "先来这边。"), (gap, "我马上就到。"), (last, "我们一起走。"), (reused, "我记得这件事。"),
+        ])
+        self.add_mission_with_sentences(owner, [])
+        story = f"Story/Mission/{asset_mission}/Story{performance_id}.json"
+        self.write("Config/SpecialMissionIDPair.json", {"PairList": [
+            {"MainMissionID": owner, "SubMissionIDList": [sub_id]},
+        ]})
+        self.write(f"Config/Level/Mission/{asset_mission}/Mission_{sub_id}.json", {
+            "Type": "Mission", "OnStartSequece": [{"TaskList": [
+                {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "C", "PerformanceID": performance_id},
+            ]}],
+        })
+        self.write("ExcelOutput/PerformanceC.json", [{"PerformanceID": performance_id, "PerformancePath": story}])
+        self.write(story, {"OnStartSequece": [
+            {"TaskList": [{"$type": "RPG.GameCore.PlayTimeline", "TimelineName": "opening.playable"}]},
+            *[{"TaskList": [
+                {"$type": "RPG.GameCore.WaitCustomString", "CustomString": {"Value": f"TalkSentence_{sid}"}},
+            ]} for sid in (first, last)],
+        ]})
+        self.simple_perf(f"Config/Level/Mission/{asset_mission}/Act/Act{asset_mission}09.json", [reused])
+
+        db = Path(self.temp.name) / "moved-timeline.db"
+        import_data(self.root, db)
+        detail = get_mission(db, str(owner), script=story)
+        self.assertEqual([line["sentence_id"] for line in detail["lines"]], list(map(str, (first, gap, last))))
+
+    def test_level_group_ownership_requires_typed_call_and_excludes_shared_npc_dialogue(self):
+        old, new = 1098901, 1098902
+        first, gap, last = 109890301, 109890302, 109890303
+        self.add_mission_with_sentences(old, [
+            (601, "把信笺转交给丹恒。"), (602, "这是共享的场景对白。"), (603, "另外一种类型的演出。"),
+            (first, "你看看这封信。"), (gap, "信纸上没有落款。"), (last, "我会仔细考虑。"),
+        ])
+        self.add_mission_with_sentences(new, [(604, "这是后来添加的地图互动。")])
+        other_type = f"Story/Mission/{old}/Story109890101.json"
+        owned = f"Config/Level/Mission/{old}/Act/Act109890101.json"
+        shared = f"Config/Level/Mission/{old}/Act/Act109890102.json"
+        timeline = f"Story/Mission/{old}/Story109890103.json"
+        later_scene = f"Config/Level/Mission/{new}/Act/Act109890203.json"
+        for path, sid in ((owned, 601), (shared, 602), (other_type, 603), (later_scene, 604)):
+            self.simple_perf(path, [sid])
+        self.write("ExcelOutput/PerformanceE.json", [
+            {"PerformanceID": 109890101, "PerformancePath": owned},
+            {"PerformanceID": 109890102, "PerformancePath": shared},
+            {"PerformanceID": 109890203, "PerformancePath": later_scene},
+        ])
+        self.write("ExcelOutput/PerformanceC.json", [
+            {"PerformanceID": 109890101, "PerformancePath": other_type},
+            {"PerformanceID": 109890103, "PerformancePath": timeline},
+        ])
+        self.write(timeline, {"OnStartSequece": [
+            {"TaskList": [{"$type": "RPG.GameCore.PlayTimeline", "TimelineName": "letter.playable"}]},
+            *[{"TaskList": [
+                {"$type": "RPG.GameCore.WaitCustomString", "CustomString": {"Value": f"TalkSentence_{sid}"}},
+            ]} for sid in (first, last)],
+        ]})
+        graph = "Config/Level/NPCDialogue/example.json"
+        shared_graph = "Config/Level/PropDialogue/ambient.json"
+        later_graph = "Config/Level/PropDialogue/later.json"
+        for path, pid in ((graph, 109890101), (shared_graph, 109890102), (later_graph, 109890203)):
+            self.write(path, {"OnStartSequece": [{"TaskList": [
+                {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "E", "PerformanceID": pid},
+            ]}]})
+        timeline_graph = "Config/Level/NPCDialogue/letter.json"
+        self.write(timeline_graph, {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "C", "PerformanceID": 109890103},
+        ]}]})
+        location = "Config/LevelOutput/RuntimeGroup/Groups_P10000_F10000002"
+        self.write(f"{location}/LevelGroup_P10000_F10000002_G1.json", {
+            "Category": "Mission", "OwnerMainMissionID": new,
+            "NPCList": [{"Dialog": {"LevelGraph": path}} for path in (graph, shared_graph, timeline_graph)],
+        })
+        self.write(f"{location}/LevelGroup_P10000_F10000002_G2.json", {
+            "Category": "Atmosphere", "PropList": [{"Dialog": {"LevelGraph": shared_graph}}],
+        })
+        self.write(f"{location}/LevelGroup_P10000_F10000002_G3.json", {
+            "Category": "Mission", "OwnerMainMissionID": old, "PropList": [{"Dialog": {"LevelGraph": later_graph}}],
+        })
+        db = Path(self.temp.name) / "level-group.db"
+
+        def assign_test_versions(conn):
+            conn.executemany("UPDATE missions SET version=?,version_status='verified' WHERE id=?",
+                             [("1.0", str(old)), ("1.1", str(new))])
+            return 2
+
+        with patch("backend.version_metadata.apply_versions", side_effect=assign_test_versions):
+            import_data(self.root, db)
+        with open_db(db) as conn:
+            owners = {row["script"]: row["mission_id"] for row in conn.execute(
+                "SELECT script,mission_id FROM lines WHERE sentence_id IN ('601','602','603','604')"
+            )}
+        self.assertEqual(owners, {owned: str(new), shared: str(old), other_type: str(old), later_scene: str(new)})
+        self.assertFalse(lexical_search(db, "把信笺转交给丹恒", filters={"version": "1.0"}))
+        hit = lexical_search(db, "把信笺转交给丹恒", filters={"version": "1.1"})[0]
+        self.assertEqual(hit["mission_id"], str(new))
+        self.assertFalse(get_mission(db, str(new), line_id=hit["line_id"])["anchor_missing"])
+        detail = get_mission(db, str(new), script=timeline)
+        self.assertEqual([line["sentence_id"] for line in detail["lines"]], list(map(str, (first, gap, last))))
+
+    def test_reviewed_scene_applies_only_to_the_matching_script_revision(self):
+        script = "Config/Level/Mission/1/Act/Act1.json"
+        path = self.root / script
+        metadata = self.root / "reviewed-scenes.json"
+        self.write(metadata.name, {"schema_version": 1, "scenes": [{
+            "id": "scene-reviewed-location", "name": "经核对的互动场景", "world": "匹诺康尼",
+            "version": "2.1", "sources": ["https://example.com/release"], "evidence": "和版本记录相符的对白",
+            "scripts": {script: hashlib.sha256(path.read_bytes()).hexdigest()},
+        }]})
+        verified = Path(self.temp.name) / "verified.db"
+        changed = Path(self.temp.name) / "changed.db"
+        with patch("backend.data.SCENE_CONTEXTS", metadata):
+            import_data(self.root, verified)
+            with path.open("ab") as stream:
+                stream.write(b"\n")
+            import_data(self.root, changed)
+        hit = lexical_search(verified, "只有留下才能见到这条分支台词", {"version": "2.1"})[0]
+        old_hit = lexical_search(changed, "只有留下才能见到这条分支台词")[0]
+        self.assertEqual((hit["mission_id"], hit["line_id"]), ("scene-reviewed-location", old_hit["line_id"]))
+        self.assertEqual(old_hit["mission_id"], "1")
+        detail = get_mission(verified, hit["mission_id"], line_id=hit["line_id"])
+        self.assertFalse(detail["anchor_missing"])
+        self.assertEqual(detail["mission"]["version_source"], "https://example.com/release")
+
+    def test_reviewed_scene_attaches_only_to_the_verified_existing_mission(self):
+        self.add_mission_with_sentences(2, [])
+        script = "Config/Level/Mission/1/Act/Act1.json"
+        metadata = self.root / "reviewed-scenes.json"
+        self.write(metadata.name, {"schema_version": 1, "scenes": [{
+            "id": "scene-reviewed-mission", "name": "长日入夜行", "world": "匹诺康尼",
+            "version": "2.1", "target_mission": "2", "sources": ["https://example.com/release"],
+            "evidence": "任务内触发的对白",
+            "scripts": {script: hashlib.sha256((self.root / script).read_bytes()).hexdigest()},
+        }]})
+
+        for target_version, expected_mission in (("2.1", "2"), ("2.0", "1")):
+            def apply_versions(conn):
+                conn.execute("""UPDATE missions SET version=?, version_status='verified',
+                                world='匹诺康尼' WHERE id='2'""", (target_version,))
+                return 1
+
+            db = Path(self.temp.name) / f"target-{target_version}.db"
+            with patch("backend.data.SCENE_CONTEXTS", metadata), patch("backend.version_metadata.apply_versions", apply_versions):
+                import_data(self.root, db)
+            hit = lexical_search(db, "只有留下才能见到这条分支台词")[0]
+            self.assertEqual(hit["mission_id"], expected_mission)
+            self.assertFalse(get_mission(db, expected_mission, line_id=hit["line_id"])["anchor_missing"])
 
     def test_core_import_search_metadata_and_stable_ids(self):
         first_db = Path(self.temp.name) / "first.db"

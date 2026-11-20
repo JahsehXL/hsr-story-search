@@ -9,7 +9,7 @@ from pathlib import Path
 from rapidfuzz.distance import LCSseq
 from rapidfuzz.fuzz import partial_ratio
 
-from .data import normalize_text, open_db, search_tokens, version_sort_key
+from .data import dialogue_origin, normalize_text, open_db, search_tokens, version_sort_key
 
 
 ALIASES = {
@@ -303,6 +303,8 @@ def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False, filter
         match = lines[max(range(len(lines)), key=line_scores.__getitem__)] if lines else None
         item["line_id"] = match["id"] if match else ""
         item["sentence_id"] = match["sentence_id"] if match else ""
+        if match and (origin := dialogue_origin(item["script"], match["sentence_id"])):
+            item["dialogue_origin"] = origin
         item["speaker"] = match["speaker"] if match else ""
         item["text"] = _snippet(match["search_text"] if match else item["text"], query)
         if match and len(match["text"]) <= 350:

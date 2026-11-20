@@ -1,0 +1,300 @@
+{
+  "schema_version": 1,
+  "scenes": [
+    {
+      "id": "scene-clock-studios-origami",
+      "name": "折纸小鸟·克劳克影视乐园",
+      "world": "匹诺康尼",
+      "version": "2.1",
+      "sources": [
+        "https://wiki.biligame.com/sr/折纸小鸟•克劳克影视乐园",
+        "https://wiki.biligame.com/sr/黄金公子（克劳克影视乐园）",
+        "https://www.hoyolab.com/article/26377561"
+      ],
+      "evidence": "黄金公子的首次见面、收集提示与领奖对白，区别于后续折纸小鸟对对碰活动。",
+      "scripts": {
+        "Config/Level/Mission/4140303/Act/Act414034101.json": "7efcb00cef1cdbca02f1e7f7a6dc050b4ca0a384aa037b8de5978c5c8fa8be92",
+        "Config/Level/Mission/4140303/Act/Act414034102.json": "324eb2fbcf0effaba6bfc378b784634274b540023dcb31e67ac7db5def4184ba"
+      }
+    },
+    {
+      "id": "scene-dewlight-origami",
+      "name": "朝露公馆·草绿经理附近的主线旁白",
+      "world": "匹诺康尼",
+      "version": "2.1",
+      "sources": [
+        "https://wiki.biligame.com/sr/草绿经理（朝露公馆）",
+        "https://www.hoyolab.com/article/26377561"
+      ],
+      "evidence": "三句旁白完整对应朝露公馆的主线砂金对话记录。",
+      "scripts": {
+        "Config/Level/Mission/4140303/Act/Act414034000.json": "fa983fa28c7dde71b675ffa6d3db1c70492f1e534b758c21dd67b2977ac775fc"
+      }
+    },
+    {
+      "id": "scene-party-car-shush",
+      "name": "派对车厢·「闭嘴」",
+      "world": "星穹列车",
+      "version": "2.7",
+      "sources": [
+        "https://wiki.biligame.com/sr/「闭嘴」",
+        "https://www.hoyolab.com/article/35356638"
+      ],
+      "evidence": "派对车厢内的调饮机器人首次介绍与日常招呼。",
+      "scripts": {
+        "Config/Level/Mission/5031140/Act/Act503114001.json": "d250d497cab6a7f4df1d7e1b12828d9cc55e711ed5f31aed49c295a3efcc12fd",
+        "Config/Level/Mission/5031140/Act/Act503114002.json": "09649560a9a8d0fba602f9b99a98345106c0eaa1e81758f5d41a1d06e4243b1d"
+      }
+    },
+    {
+      "id": "scene-astropolis-rong",
+      "name": "指针塔·绒小满",
+      "world": "千星城",
+      "version": "4.5",
+      "sources": [
+        "https://wiki.biligame.com/sr/绒小满",
+        "https://www.bilibili.com/opus/1240645975452680230"
+      ],
+      "evidence": "指针塔接待大厅的首次介绍与再次交谈。",
+      "scripts": {
+        "Config/Level/Mission/5014526/Act/Act501452600.json": "710fd5b22f3d18aadae05b94702666727fbb483586b425dc3e24566d85ae2924",
+        "Config/Level/Mission/5014526/Act/Act501452601.json": "023add0d01f566f7c91afd0bfe36d9e38bdce717e5f14642aa69da5e0f41d2d3"
+      }
+    },
+    {
+      "id": "scene-planarcadia-star-rabbit",
+      "name": "星轨之兔·无名尘灵",
+      "world": "二相乐园",
+      "version": "4.0",
+      "sources": [
+        "https://wiki.biligame.com/sr/互动文本/二相乐园",
+        "https://www.bilibili.com/video/BV13GZsBeEhM/"
+      ],
+      "evidence": "无名尘灵介绍星轨之兔的互动，游戏玩法在4.0已有实录。",
+      "scripts": {
+        "Config/Level/Mission/4010120/Act/Act401012001.json": "7b3b7056348a02b783352460c3058704d411719742049e0674320a0b58b727f0"
+      }
+    },
+    {
+      "id": "scene-belobog-museum",
+      "name": "历史文化博物馆·于尔丹与鲍里斯",
+      "world": "雅利洛-Ⅵ",
+      "version": "1.1",
+      "sources": [
+        "https://wiki.biligame.com/sr/于尔丹",
+        "https://wiki.biligame.com/sr/鲍里斯",
+        "https://www.youtube.com/watch?v=7OGa5scmDFI"
+      ],
+      "evidence": "博物馆常驻人物的共用互动，多个藏品任务调用，适合统一放在博物馆场景。",
+      "scripts": {
+        "Config/Level/Mission/5011901/Act/Act501190101.json": "8ff1321fbf77fcf5dace6f30c8a76823b7db1e4ab5b74119bba458ce3652366c",
+        "Config/Level/Mission/5011901/Act/Act501190102.json": "164da7903a037b07c447415242ec867793f88c92ab23aff01384cc1db4182bb5",
+        "Config/Level/Mission/5011901/Act/Act501190104.json": "a16e4ab82f61a20c96bc3240ce59b00e24abf8bcb6ffe2959066b7882aa00272",
+        "Config/Level/Mission/5011902/Act/Act501190201.json": "47caac582477b29db06b8b0bfaf87981a033a2f6d6063aa4639e8c45361b53df",
+        "Config/Level/Mission/5011902/Act/Act501190202.json": "d580ac79f294cac7098152cba6226b007957e89155c8e17a9cf4071d2ba6bf42"
+      }
+    },
+    {
+      "id": "scene-peppy-terminal",
+      "name": "异宠拾遗：神探佩佩间章集",
+      "world": "空间站「黑塔」",
+      "version": "1.6",
+      "sources": [
+        "https://www.gamersky.com/handbook/202312/1691205.shtml"
+      ],
+      "evidence": "禁闭舱段的任务入口小机器人通知佩佩抵达。任务图在神探佩佩间章集内引用该入口。",
+      "scripts": {
+        "Config/Level/Mission/4070011/Act/Act407001100.json": "92c6eed0477d5c261900d7426028b841eb2468f6920113985b488bc2f212151c"
+      },
+      "target_mission": "8016210"
+    },
+    {
+      "id": "scene-origami-college-dreamclocks",
+      "name": "折纸大学·三只梦境迷钟",
+      "world": "匹诺康尼",
+      "version": "2.6",
+      "sources": [
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/5e3c0bf598e3062f1d493feb896959b7525c15f7/Config/Level/GroupGraph/F10306001/Group_F10306001_G347.json",
+        "https://www.gamersky.com/handbook/202410/1833727.shtml"
+      ],
+      "evidence": "2.6 折纸大学关卡组按钮直接触发三只迷钟的合影留念对白。",
+      "scripts": {
+        "Config/Level/Mission/4015506/Act/Act401550618.json": "111b75118578f77e4fab0968442b7d06c8f7a0deceee3eb8bc4179b75ef26907"
+      }
+    },
+    {
+      "id": "scene-origami-college-huohuo-phone",
+      "name": "折纸大学·窥梦电话（藿藿）",
+      "world": "匹诺康尼",
+      "version": "2.6",
+      "sources": [
+        "https://www.youtube.com/watch?v=tNUfjcdiuwI",
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/5e3c0bf598e3062f1d493feb896959b7525c15f7/Config/Level/GroupGraph/F10306001/Group_F10306001_G351.json"
+      ],
+      "evidence": "藿藿的梦境已见于 2.6 实录，折纸大学关卡组 351 触发该演出。",
+      "scripts": {
+        "Config/Level/Mission/5036000/Act/Act503600007.json": "b6f1008225359c544f75f9f1fef63099f6b1a73871e4ecc77dca921203d989be"
+      }
+    },
+    {
+      "id": "scene-origami-college-student",
+      "name": "折纸大学·走廊罚站的皮皮西学生",
+      "world": "匹诺康尼",
+      "version": "2.6",
+      "sources": [
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/5e3c0bf598e3062f1d493feb896959b7525c15f7/Config/Level/GroupGraph/F10306001/Group_F10306001_G291.json"
+      ],
+      "evidence": "2.6 折纸大学关卡组 291 已从互动触发同号对话，历史脚本包含全部台词引用。",
+      "scripts": {
+        "Story/Discussion/Mission/5036000/DS503600007.json": "f5d13643d7011fe1c6380c361753329489a076d918cd265b8b71ab79159479ac"
+      }
+    },
+    {
+      "id": "scene-exomyth-lycurgus",
+      "name": "「神话之外」试验场·来古士之影",
+      "world": "翁法罗斯",
+      "version": "3.7",
+      "sources": [
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/5e960aa11f83b9245c722087caa4621708aa770e/Config/Level/Mission/5013701/Act/Act501370201.json",
+        "https://honkai-star-rail.fandom.com/wiki/%22Exomyth%22_%28The_Witch%27s_Ardent_Research%29"
+      ],
+      "evidence": "3.7 客户端已有完全一致的脚本，当前试验场 δ-me13 的组图触发来古士之影说明自由月。",
+      "scripts": {
+        "Config/Level/Mission/5013701/Act/Act501370201.json": "8d659a3e3874ceaa28c6765260a982b7792f4c53242d7bcb274bf702dab65e04"
+      }
+    },
+    {
+      "id": "scene-astropolis-dragon-rumor",
+      "name": "千星城中心城区·阿龙与博识学会学士",
+      "world": "千星城",
+      "version": "4.5",
+      "sources": [
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/4ce30f69b32dc259ab9a8da3ba57035485103221/Config/Level/PropDialogue/P10551/F10551001_G265/DialogueMain_F10551001_G265_P300001.json",
+        "https://www.bilibili.com/opus/1240645975452680230"
+      ],
+      "evidence": "4.5 千星城中心城区的机关直接调用两句闲聊。同路径在所核对的 4.4 档案中不存在。",
+      "scripts": {
+        "Config/Level/Mission/5014525/Act/Act501452509.json": "13038c8050aeeef38060c5b70745a760b7a726bfb49ee4fb7dba2eb17d7a7c31"
+      }
+    },
+    {
+      "id": "scene-aokhema-sitals",
+      "name": "奥赫玛·西塔罗斯的古玩店",
+      "world": "翁法罗斯",
+      "version": "3.1",
+      "sources": [
+        "https://wiki.biligame.com/sr/西塔罗斯",
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/66e27e761fa490a457112a04208b80371d28b088/Config/Level/NPCDialogue/P10401/F10401001_G37/DialogueMain_F10401001_G37_N400001.json"
+      ],
+      "evidence": "3.1 奥赫玛商人交互已触发两套对白，同一商人可被多日鉴宝任务调用。",
+      "scripts": {
+        "Config/Level/Mission/5040020/Act/Act504002001.json": "e46417753cdfe1ae806afabccf61dc29ad06720c2eabf02e4a1e7b14e8c7ac69",
+        "Config/Level/Mission/5040020/Act/Act504002002.json": "6c727a2b19dfce32bccb7e65b1a9b85c14deb9b37361be9e370ae1a570278193"
+      }
+    },
+    {
+      "id": "scene-belobog-celine",
+      "name": "行政区·塞琳",
+      "world": "雅利洛-Ⅵ",
+      "version": "3.1",
+      "sources": [
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/66e27e761fa490a457112a04208b80371d28b088/Config/Level/NPCDialogue/P10101/F10101001_G15/DialogueMain_F10101001_G15_N400013.json"
+      ],
+      "evidence": "3.1 的行政区 NPC 图已绑定该演出并保有全部台词引用，3.0 档案无该脚本。",
+      "scripts": {
+        "Config/Level/Mission/5040490/Act/Act504049005.json": "968a996ad744065345f4dfa6ea909d6f4316718b085ec672236999f7380bc02b"
+      }
+    },
+    {
+      "id": "scene-astral-express-light-switch",
+      "name": "星穹列车·车厢电灯开关",
+      "world": "星穹列车",
+      "version": "2.7",
+      "sources": [
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/fde92f72f63b890256a64b0e6e7cc46c0728f7ca/Config/Level/GroupGraph/F10000003/Group_F10000003_G102.json",
+        "https://www.hoyolab.com/article/35356638"
+      ],
+      "evidence": "2.7 车厢关卡图已经触发四段开关对白，2.6 档案无这些脚本。",
+      "scripts": {
+        "Config/Level/Mission/5340141/Act/Act534014101.json": "fc7a307bd746cc3c7beaaa586fb9bdac4fb5232627aaf0d2ead6ebb32597d327",
+        "Config/Level/Mission/5340141/Act/Act534014118.json": "cba7cdf8dce06e9719b845d3bc047ec28b8cb3d1ec886ec7b7e0310bff4b8496",
+        "Config/Level/Mission/5340141/Act/Act534014119.json": "08dab52105064303c1d1734617d6413bbcab22775fef7f49e8d0eb4d3dbaca2b",
+        "Config/Level/Mission/5340141/Act/Act534014120.json": "43d8ab8509b6b59d72a46d076d7de9aa39d308e277f13517652bbb821679e2a7"
+      }
+    },
+    {
+      "id": "scene-bartholos-troubles",
+      "name": "巴特鲁斯添堵记",
+      "world": "翁法罗斯",
+      "version": "3.6",
+      "sources": [
+        "https://www.bilibili.com/video/BV1Z3nEzJEp2/",
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/0333b3a6ac8d06174263921f1264f3ac5fa43693/Story/Discussion/Mission/1043664/DS104366424.json",
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/0333b3a6ac8d06174263921f1264f3ac5fa43693/Story/Discussion/Mission/1043664/DS104366428.json"
+      ],
+      "evidence": "3.6 的实录表明营救奇美拉对应该支线。开场和救出小动物后的对白均在 3.6 客户端数据。",
+      "scripts": {
+        "Story/Discussion/Mission/1043664/DS104366424.json": "15018a23ca882eeb7a3eddbe0dfa8b8aebe2cd226ebeab19c9930b0c11523967",
+        "Story/Discussion/Mission/1043664/DS104366428.json": "790192790f7f3ad590b93043b11778413eafc1897e0dae51869b7ebdb11994e3"
+      },
+      "target_mission": "4016401"
+    },
+    {
+      "id": "scene-eternal-page-bartholos-calypso",
+      "name": "「岁月彼岸」一页永恒·巴特鲁斯与卡吕普索",
+      "world": "翁法罗斯",
+      "version": "3.7",
+      "sources": [
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/5e960aa11f83b9245c722087caa4621708aa770e/Config/Level/PropDialogue/P10405/F10405001_G118/DialogueMain_F10405001_G118_P300001.json"
+      ],
+      "evidence": "3.7 一页永恒的机关直接触发两人回顾格奈乌斯、尼卡多利的谈话。",
+      "scripts": {
+        "Story/Discussion/Mission/5023799/DS502379943.json": "d9fd04206e01218e8e52e35d7174360930292146f518659e6327e67b48080ba1"
+      }
+    },
+    {
+      "id": "scene-golden-confessional-merchant",
+      "name": "「世界尽头」酒馆·神秘马桶商人",
+      "world": "二相乐园",
+      "version": "4.0",
+      "sources": [
+        "https://www.youtube.com/watch?v=jPLnq6UTuX4",
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/ef1a136031756a146f51891f135c337e4ea87487/Story/Discussion/Mission/5034099/DS503409947.json"
+      ],
+      "evidence": "4.0 黄金告解室的马桶商人与认养入口有实录，对应演出已在 4.0 源数据。",
+      "scripts": {
+        "Story/Discussion/Mission/5034099/DS503409947.json": "09bfdf86d5564816cf2006d9dcd32e6d54977e1ccf7a06183c90903dcbe8a624"
+      }
+    },
+    {
+      "id": "scene-radiant-feldspar-stephen",
+      "name": "晖长石号·塞提芬诺",
+      "world": "匹诺康尼",
+      "version": "2.3",
+      "sources": [
+        "https://www.bilibili.com/video/BV1CE421P7mQ/?p=16",
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/5e3c0bf598e3062f1d493feb896959b7525c15f7/Config/Level/Mission/5030760/Act/Act503076001.json"
+      ],
+      "evidence": "2.3 实录第 16 集列出晖长石号塞提芬诺的钟表把戏与对话。现有脚本是同一位摄影师主动打量、提出拍照的互动，2.6 归档保留这组对白 ID。",
+      "scripts": {
+        "Config/Level/Mission/5030760/Act/Act503076001.json": "8728ca7fc2616056d0ad135ce6321b01d515658677f222bde68568ce598844e4"
+      }
+    },
+    {
+      "id": "scene-aedes-elysiae-cyrene-reunion",
+      "name": "哀丽秘榭·与昔涟的记忆重逢",
+      "world": "翁法罗斯",
+      "version": "3.7",
+      "sources": [
+        "https://www.bilibili.com/video/BV1qok1BFEPc/",
+        "https://www.bilibili.com/video/BV1Kg2cBbEDW/",
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/5e960aa11f83b9245c722087caa4621708aa770e/Config/Level/GroupGraph/F10441001/Group_F10441001_G337.json",
+        "https://github.com/DimbreathBot/TurnBasedGameData/blob/ef1a136031756a146f51891f135c337e4ea87487/Story/Discussion/Mission/5013701/DS501370154.json"
+      ],
+      "evidence": "3.7 实录记录哀丽秘榭与昔涟道别的成就互动。同版本哀丽秘榭 G337 触发 501370154，PerformanceDS 指向此脚本。4.0 导出相同路径的演出含全部对白 ID。",
+      "scripts": {
+        "Story/Discussion/Mission/5013701/DS501370154.json": "f3903a3b87ebe0aec44c7486a528a7e570ca1a4e0e18823a5fc6242df71bbec9"
+      }
+    }
+  ]
+}

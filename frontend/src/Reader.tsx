@@ -3,7 +3,7 @@ import { cleanMissionName, displayText, Empty, errorText, Highlight, missionType
 import { buildStoryModel, formatAltLabel, resolveFullMissionStory, sceneStatusLabel, shareStoryAnchor, shouldShowTrailingExtraDivider, storyBlocks } from './story';
 import StoryBlock from './StoryBlock';
 import type { ChoiceSet } from './story';
-import type { DialogueLine, MissionResponse, Result } from './types';
+import type { DialogueLine, DialogueOrigin, MissionResponse, Result } from './types';
 
 interface ReaderProps {
   selected: Result | null;
@@ -26,6 +26,17 @@ interface ReaderProps {
 
 const missionTypes: Record<string, string> = { Main: '开拓任务', Branch: '冒险任务', Companion: '同行任务', Daily: '日常任务', Interlude: '开拓续闻', Gap: '开拓续闻' };
 const emptySelections: Record<string, string> = {};
+
+const originKindLabels = { trigger: '游戏触发点', shared_config: '共用配置', workflow: '任务引用' };
+
+function DialogueOrigins({ origin }: { origin: DialogueOrigin }) {
+  return <div className="dialogue-origins">
+    <strong>多个出处</strong>
+    <ul>{origin.origins.map(item => <li key={`${item.kind}:${item.name}`}>
+      <span>{originKindLabels[item.kind]}</span> {item.name}{item.task_version && `（任务版本 ${item.task_version}）`}
+    </li>)}</ul>
+  </div>;
+}
 
 function Dialogue({ line, query, hit, onShare }: { line: DialogueLine; query: string; hit: boolean; onShare: (line: DialogueLine) => void }) {
   const name = speakerName(line.speaker);
@@ -216,10 +227,13 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
   if (!selected) return <section className="reader reader-idle"><div><h2>选择左侧结果，回到故事里</h2><p>以剧本台词本形式查看完整任务上下文、开放版本与全部玩家分支选项。</p></div></section>;
   const chapter = mission?.chapter || selected.chapter;
   const world = mission?.world || selected.world;
-  const name = cleanMissionName(mission?.name || selected.mission_name, chapter, world);
-  const typeKey = mission?.type || selected.type || '';
-  const verText = versionText(mission?.version || selected.version, mission?.version_status || selected.version_status);
-  const copySource = [name, chapter && chapter !== name ? chapter : '', world, verText].filter(Boolean).join(' · ');
+  const hitLine = detail?.lines.find(line => line.id === hitId);
+  const origin = hitLine ? hitLine.dialogue_origin : selected.dialogue_origin;
+  const originScript = hitLine?.script || selected.script;
+  const name = origin?.title || cleanMissionName(mission?.name || selected.mission_name, chapter, world);
+  const typeKey = origin ? '' : mission?.type || selected.type || '';
+  const verText = origin ? '对白版本待核实' : versionText(mission?.version || selected.version, mission?.version_status || selected.version_status);
+  const copySource = [name, !origin && chapter !== name ? chapter : '', world, verText].filter(Boolean).join(' · ');
   const copyDialogue = () => onCopy(visibleLines.length ? visibleLines.map(line => `${speakerName(line.speaker)}：${displayText(line.text)}`).join('\n\n') : `${speakerName(selected.speaker)}：${selected.text}`);
   const hasMore = detail?.has_more ?? (detail ? detail.total > (detail.offset || 0) + detail.lines.length : false);
   const hasEarlier = (detail?.offset || 0) > 0;
@@ -230,9 +244,9 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
         <div className="reader-breadcrumb">
           <button type="button" className="reader-back-button" onClick={onBack} title="返回搜索结果">← 返回</button>
           {typeKey && <span className={`mission-badge type-${missionTypeClass(typeKey)}`}>{missionTypes[typeKey] || typeKey}</span>}
-          <span className={`version-label ${!(mission?.version || selected.version) ? 'unverified' : ''}`}>{verText}</span>
+          <span className={`version-label ${origin || !(mission?.version || selected.version) ? 'unverified' : ''}`}>{verText}</span>
           <span>{mission?.world || selected.world || '剧情对白'}</span>
-          {chapter && <><span>/</span><span>{chapter}</span></>}
+          {!origin && chapter && <><span>/</span><span>{chapter}</span></>}
         </div>
         <div className="reader-meta">
           {detail && <button className="text-button" aria-pressed={showFullText} title={showFullText ? '按需显示屏幕附近的对白，减少内存占用' : '渲染全部已加载对白，支持浏览器查找和辅助技术遍历，会占用更多内存'} onClick={() => setFullTextMode({ missionId: selected.mission_id, enabled: !showFullText })}>{showFullText ? '按需显示' : '显示全文'}</button>}
@@ -246,6 +260,7 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
         <h1>{name}</h1>
         <button className={`icon-button bookmark-button ${bookmarked ? 'is-saved' : ''}`} title={bookmarked ? '取消收藏命中结果' : '收藏命中结果'} aria-label={bookmarked ? '取消收藏命中结果' : '收藏命中结果'} onClick={onBookmark}>{bookmarked ? '★' : '☆'}</button>
       </div>
+      {origin && <DialogueOrigins origin={origin} />}
       {editing && !onOpenCurrentForVersion && <form className="version-editor" onSubmit={async event => {
         event.preventDefault(); setSaving(true); setSaveError('');
         try { await onVersionSave(version, source, versionState); setEditing(false); }
@@ -276,6 +291,9 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
             const startsScene = groups[groupIndex - 1]?.script !== group.script;
             const showExtraDivider = shouldShowTrailingExtraDivider(groups[groupIndex - 1]?.script, group.script, orderedScripts, optionalScripts);
             const sceneLabel = sceneStatusLabel(group.script, group.lines[0]?.scene_label);
+            const sceneOrigin = startsScene && (!origin || originScript !== group.script)
+              ? group.lines.find(line => line.dialogue_origin)?.dialogue_origin
+              : undefined;
             return <div className={`story-segment ${isBranchFollowup ? 'branch-followup' : ''} ${altSiblings ? 'alt-branch-segment' : ''}`} key={group.key}>
               {showExtraDivider && (
                 <div className="scene-end-divider" role="separator" aria-label="任务内补充对白">
@@ -285,6 +303,7 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
                 </div>
               )}
               {startsScene && sceneLabel && <div className="branch-followup-header"><span>{sceneLabel}</span></div>}
+              {sceneOrigin && <DialogueOrigins origin={sceneOrigin} />}
               {isBranchFollowup && <div className="branch-followup-header"><span>↳ 当前所选回答的后续分支对白</span></div>}
               {altSiblings && group.altSlot && <div className="alt-branch-bar" role="group" aria-label={group.altKind === 'rand' ? '随机对白变体' : '条件分支'}>
                 <span className="alt-branch-title">

@@ -11,11 +11,12 @@ import unicodedata
 from bisect import bisect_right
 from collections import defaultdict
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
 from typing import Callable
 
 from .mission_order import (
-    OPTIONAL_SUB_MISSION, VOICE_TASKS, apply_mission_script_orders,
+    LEVEL_GROUP_PATTERN, MISSION_INFO_PATTERN, OPTIONAL_SUB_MISSION, VALID_PERF_TYPES, VOICE_TASKS, apply_mission_script_orders,
     ensure_script_order_schema, mission_talk_range, municipal_chat_sentence_ids,
     voice_sentence_ids, voice_sentence_map,
 )
@@ -23,7 +24,9 @@ from .version_metadata import load_metadata, normalize_name
 
 
 SCHEMA_VERSION = 1
-IMPORTER_VERSION = 9
+IMPORTER_VERSION = 13
+SCENE_CONTEXTS = Path(__file__).parent / "resources" / "scene_contexts.json"
+DIALOGUE_ORIGINS = Path(__file__).parent / "resources" / "dialogue_origins.json"
 MISSION_TRIGGER_PATTERN = "Config/Level/Mission/*/Mission_*.json"
 SCRIPT_PATTERNS = (MISSION_TRIGGER_PATTERN, "Config/Level/Mission/*/Act/*.json",
                    "Story/Discussion/Mission/*/*.json", "Story/Mission/*/*.json")
@@ -221,6 +224,10 @@ class DatasetBuilder:
         self.line_count = 0
         self.referenced_performance: dict[str, set[str]] = {}
         self.performance_owners: dict[str, str] = {}
+        self.mission_graph_owners: dict[str, set[str]] = defaultdict(set)
+        self.ownership_conflicts: dict[str, list[str]] = {}
+        self.contextual_script_owners: dict[str, str] = {}
+        self.reviewed_scene_contexts: dict[str, dict] = {}
         self.performance_paths: dict[str, set[str]] = defaultdict(set)
         self.timeline_conflicts: dict[str, list[str]] = {}
         self.unverified_timeline_groups: dict[str, dict] = {}
@@ -288,27 +295,129 @@ class DatasetBuilder:
                 "speaker": normalize_text(speaker_raw) or "开拓者",
                 "text": self._resolve_text_joins(raw_text),
             }
-        trigger_owners: dict[tuple[str, str], set[str]] = defaultdict(set)
-        for mission_script in sorted(self.root.glob(MISSION_TRIGGER_PATTERN)):
-            mid = mission_script.parent.name
-            if mid not in self.missions:
+        self.load_script_owners()
+
+    def load_script_owners(self) -> None:
+        special_owners: dict[str, set[str]] = defaultdict(set)
+        special_path = self.root / "Config/SpecialMissionIDPair.json"
+        if special_path.exists():
+            for row in json.loads(special_path.read_text(encoding="utf-8-sig")).get("PairList", []):
+                for sid in row["SubMissionIDList"]:
+                    special_owners[str(sid)].add(str(row["MainMissionID"]))
+
+        direct_graph_owners: dict[str, set[str]] = defaultdict(set)
+        sub_mission_owners: dict[str, set[str]] = defaultdict(set)
+        for path in sorted(self.root.glob("Config/Level/Mission/*/MissionInfo_*.json")):
+            if not (match := MISSION_INFO_PATTERN.fullmatch(path.relative_to(self.root).as_posix())):
                 continue
-            graph = json.loads(mission_script.read_text(encoding="utf-8-sig"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            for row in data.get("SubMissionList", []):
+                mid = str(row.get("MainMissionID") or match[1])
+                sid = str(row["ID"])
+                sub_mission_owners[sid].add(mid)
+                if graph_path := row.get("MissionJsonPath"):
+                    direct_graph_owners[graph_path.replace("\\", "/")].add(mid)
+
+        trigger_owners: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for path in sorted(self.root.glob(MISSION_TRIGGER_PATTERN)):
+            script = path.relative_to(self.root).as_posix()
+            sid = path.stem.removeprefix("Mission_")
+            owners = special_owners.get(sid) or direct_graph_owners.get(script) or {path.parent.name}
+            self.mission_graph_owners[script].update(owners)
+            if len(owners) > 1:
+                self.ownership_conflicts[script] = sorted(owners)
+            graph = json.loads(path.read_text(encoding="utf-8-sig"))
             for sequence in graph.get("OnStartSequece", []):
-                for task in sequence.get("TaskList", []):
-                    if str(task.get("$type", "")).endswith("TriggerPerformance") and task.get("PerformanceID"):
-                        key = (str(task.get("PerformanceType", "")), str(task["PerformanceID"]))
-                        trigger_owners[key].add(mid)
+                for container in sequence.get("TaskList", []):
+                    for task in self.expand_actionable_tasks(container):
+                        if str(task.get("$type", "")).rsplit(".", 1)[-1] == "TriggerPerformance" and task.get("PerformanceID"):
+                            key = (str(task.get("PerformanceType", "")), str(task["PerformanceID"]))
+                            trigger_owners[key].update(owners)
+        for row in read_records(self.root / "ExcelOutput/PerformanceSubMissionLink.json"):
+            sid = str(row["SubMissionID"])
+            key = (str(row["PerformanceType"]), str(row["PerformanceID"]))
+            trigger_owners[key].update(special_owners.get(sid) or sub_mission_owners.get(sid, ()))
+
         direct_owners: dict[str, set[str]] = defaultdict(set)
-        for performance_type in ("A", "C", "CG", "D", "DS", "E"):
+        paths_by_performance: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for performance_type in sorted(VALID_PERF_TYPES):
             name = f"Performance{performance_type}.json"
             for row in read_records(self.root / "ExcelOutput" / name):
                 pid = str(row.get("PerformanceID", ""))
                 path = str(row.get("PerformancePath", ""))
                 if len(pid) == 9 and pid.isdigit() and "/Mission/" in path:
                     self.performance_paths[path].add(pid)
+                    paths_by_performance[performance_type, pid].add(path)
                     direct_owners[path].update(trigger_owners.get((performance_type, pid), ()))
+        for script, owners in self.level_group_script_owners(paths_by_performance).items():
+            if not direct_owners[script]:
+                if len(owners) == 1:
+                    self.contextual_script_owners[script] = next(iter(owners))
+                elif len(owners) > 1:
+                    direct_owners[script].update(owners)
+        # Early cinematic scripts can delegate some lines and choices to a matching Act.
+        # Require the same asset directory, full performance ID and a shared dialogue reference.
+        for script, owners in list(direct_owners.items()):
+            if len(owners) != 1 or not script.startswith("Story/"):
+                continue
+            directory = script.split("/Mission/", 1)[1].split("/", 1)[0]
+            if directory in owners or (pid := performance_script_id(script)) not in self.performance_paths[script]:
+                continue
+            act = f"Config/Level/Mission/{directory}/Act/Act{pid}.json"
+            if (self.root / script).is_file() and (self.root / act).is_file():
+                pattern = r'TalkSentence_(\d+)|"TalkSentenceID"\s*:\s*(\d+)'
+                story_refs = set(re.findall(pattern, (self.root / script).read_text(encoding="utf-8-sig")))
+                act_refs = set(re.findall(pattern, (self.root / act).read_text(encoding="utf-8-sig")))
+                if {a or b for a, b in story_refs} & {a or b for a, b in act_refs}:
+                    direct_owners[act].update(owners)
         self.performance_owners = {path: next(iter(owners)) for path, owners in direct_owners.items() if len(owners) == 1}
+        self.ownership_conflicts.update({path: sorted(owners) for path, owners in direct_owners.items() if len(owners) > 1})
+        for path, owners in direct_owners.items():
+            if len(owners) > 1 and path.split("/Mission/", 1)[1].split("/", 1)[0] not in owners:
+                entries = [self.verified_missions.get(mid) for mid in sorted(owners)]
+                if all(entry and entry["name"] and entry["id"] in self.missions for entry in entries):
+                    identity = {tuple(normalize_name(entry[field]) for field in ("name", "chapter", "world", "type", "version"))
+                                for entry in entries}
+                    if len(identity) == 1:
+                        # Multiple internal stages of the same named release share one archive entry.
+                        self.contextual_script_owners[path] = min(owners, key=int)
+
+    def level_group_script_owners(self, paths_by_performance: dict[tuple[str, str], set[str]]) -> dict[str, set[str]]:
+        """Trace typed performance calls through an actual NPC/prop in a level group."""
+        if not paths_by_performance:
+            return {}
+        graph_groups: dict[str, set[str]] = defaultdict(set)
+        root = self.root.resolve()
+        for path in (root / "Config/LevelOutput").glob("*/Groups_*/LevelGroup_*.json"):
+            if not LEVEL_GROUP_PATTERN.fullmatch(path.relative_to(root).as_posix()):
+                continue
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            owner = str(data.get("OwnerMainMissionID") or "")
+            if owner not in self.missions or data.get("Category") != "Mission":
+                owner = ""
+            for group_key in ("NPCList", "PropList"):
+                for entity in data.get(group_key, ()):
+                    dialogue = entity.get("Dialog") or {}
+                    for entry in (dialogue, *(dialogue.get("PackList") or ())):
+                        if graph := entry.get("LevelGraph"):
+                            graph_groups[graph.replace("\\", "/")].add(owner)
+
+        script_owners: dict[str, set[str]] = defaultdict(set)
+        for graph, owners in graph_groups.items():
+            path = (root / graph).resolve()
+            if not path.is_relative_to(root / "Config/Level") or not path.is_file():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            for sequence in data.get("OnStartSequece", ()):
+                for container in sequence.get("TaskList", ()):
+                    for task in self.expand_actionable_tasks(container):
+                        if str(task.get("$type", "")).rsplit(".", 1)[-1] != "TriggerPerformance":
+                            continue
+                        key = (str(task.get("PerformanceType", "")), str(task.get("PerformanceID", "")))
+                        paths = paths_by_performance.get(key, ())
+                        for script in paths:
+                            script_owners[script].update(owners if len(paths) == 1 else {""})
+        return {path: owners for path, owners in script_owners.items() if "" not in owners}
 
     def add_mission(self, mission_id: str, details: dict | None = None) -> None:
         if mission_id in self.missions:
@@ -351,9 +460,8 @@ class DatasetBuilder:
         if not lines:
             return
         first = lines[0]
-        mission = self.missions[first["mission_id"]]
         text = "\n".join(f"{row['speaker']}：{row['search_text']}" for row in lines)
-        context = " · ".join(value for value in (mission["world"], mission["chapter"], mission["name"]) if value)
+        context = self.mission_search_context(first["mission_id"])
         search_input = f"{context}\n{text}".strip()
         input_text = search_input
         previous_input = self.baseline_inputs.get((first["mission_id"], text))
@@ -384,6 +492,81 @@ class DatasetBuilder:
         self.conn.execute("INSERT INTO chunks_fts(rowid,terms) VALUES(?,?)", (chunk_id, search_tokens(search_input)))
         self.chunk_count += 1
         self.line_count += len(lines)
+
+    def mission_search_context(self, mission_id: str) -> str:
+        mission = self.missions[mission_id]
+        return " · ".join(value for value in (mission["world"], mission["chapter"], mission["name"]) if value)
+
+    def load_reviewed_scene_contexts(self, indexed_scripts: set[str]) -> dict[str, str]:
+        document = json.loads(SCENE_CONTEXTS.read_text(encoding="utf-8"))
+        if document.get("schema_version") != 1:
+            raise ValueError("Unsupported scene context metadata schema")
+        targets = {}
+        seen_ids = set()
+        seen_scripts = set()
+        for scene in document["scenes"]:
+            mid = scene["id"]
+            if (not re.fullmatch(r"scene-[a-z0-9-]+", mid) or mid in seen_ids or mid in self.missions
+                    or not re.fullmatch(r"\d+\.\d+", scene["version"])
+                    or not scene["name"] or not scene["world"] or not scene["evidence"]
+                    or not scene["sources"] or any(not url.startswith("https://") for url in scene["sources"])):
+                raise ValueError(f"Invalid scene context metadata: {mid}")
+            seen_ids.add(mid)
+            matching = []
+            for script, expected_hash in scene["scripts"].items():
+                path = (self.root / script).resolve()
+                if (script in seen_scripts or not path.is_relative_to(self.root.resolve())
+                        or not re.fullmatch(r"[a-f0-9]{64}", expected_hash)):
+                    raise ValueError(f"Invalid scene script metadata: {script}")
+                seen_scripts.add(script)
+                if script in indexed_scripts and path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == expected_hash:
+                    matching.append(script)
+            if not matching:
+                continue
+            target = scene.get("target_mission", mid)
+            if target != mid:
+                recorded = self.conn.execute(
+                    "SELECT name,world,version,version_status FROM missions WHERE id=?", (target,)
+                ).fetchone()
+                if not recorded or tuple(recorded) != (scene["name"], scene["world"], scene["version"], "verified"):
+                    continue
+            else:
+                self.add_mission(mid, {"name": scene["name"], "world": scene["world"], "type": "场景探索"})
+                self.conn.execute(
+                    "UPDATE missions SET version=?,version_source=?,version_status='verified' WHERE id=?",
+                    (scene["version"], scene["sources"][0], mid),
+                )
+            targets.update(dict.fromkeys(matching, target))
+            self.reviewed_scene_contexts[mid] = {**scene, "scripts": matching}
+        return targets
+
+    def apply_contextual_script_owners(self) -> None:
+        """Correct versioned context without changing anchors, branches or recovered lines."""
+        chunks = self.conn.execute("SELECT id,mission_id,script,text FROM chunks ORDER BY id").fetchall()
+        reviewed = self.load_reviewed_scene_contexts({row[2].split("::timeline-", 1)[0] for row in chunks})
+        versions = dict(self.conn.execute("SELECT id,version FROM missions WHERE version_status='verified'"))
+        applied = {}
+        for chunk_id, current, script, text in chunks:
+            base_script = script.split("::timeline-", 1)[0]
+            target = reviewed.get(base_script)
+            if not target:
+                target = self.contextual_script_owners.get(base_script)
+                if not target or not versions.get(current) or not versions.get(target):
+                    continue
+                # The location can predate new dialogue.
+                if version_sort_key(versions[target]) <= version_sort_key(versions[current]):
+                    continue
+                if base_script in VERIFIED_SCRIPT_OWNERS:
+                    continue
+            input_text = f"{self.mission_search_context(target)}\n{text}".strip()
+            self.conn.execute(
+                "UPDATE chunks SET mission_id=?,input_text=?,content_hash=? WHERE id=?",
+                (target, input_text, hashlib.sha256(input_text.encode()).hexdigest(), chunk_id),
+            )
+            self.conn.execute("UPDATE lines SET mission_id=? WHERE chunk_id=?", (target, chunk_id))
+            self.conn.execute("UPDATE chunks_fts SET terms=? WHERE rowid=?", (search_tokens(input_text), chunk_id))
+            applied[base_script] = target
+        self.contextual_script_owners = applied
 
     def save_lines(self, lines: list[dict]) -> None:
         buffer: list[dict] = []
@@ -733,7 +916,11 @@ class DatasetBuilder:
         if battle:
             mission_id = VERIFIED_BATTLE_OWNERS[parts[2]]
         else:
-            mission_id = VERIFIED_SCRIPT_OWNERS.get(script, self.performance_owners.get(script, parts[parts.index("Mission") + 1]))
+            path_owner = parts[parts.index("Mission") + 1]
+            graph_owners = self.mission_graph_owners.get(script, ())
+            if len(graph_owners) == 1:
+                path_owner = next(iter(graph_owners))
+            mission_id = VERIFIED_SCRIPT_OWNERS.get(script, self.performance_owners.get(script, path_owner))
         if is_mission_script and mission_id not in self.missions:
             return
         self.add_mission(mission_id)
@@ -953,6 +1140,7 @@ class DatasetBuilder:
         anchored_ranges: dict[str, tuple[str, str, int, int]] = {}
         timeline_anchors: dict[str, list[dict]] = {}
         ambiguous_prefixes: set[str] = set()
+        explicitly_moved_timelines: set[tuple[str, str]] = set()
         for row in self.conn.execute("""SELECT substr(sentence_id,1,7) prefix,mission_id,script
                 FROM lines WHERE length(sentence_id)=9 AND kind!='voice'
                 GROUP BY prefix,mission_id,script HAVING count(DISTINCT sentence_id)>=2"""):
@@ -960,7 +1148,14 @@ class DatasetBuilder:
             mission = self.missions.get(mid, {})
             if _accepts_anchored_recovery(mid) or mission.get("type") not in NARRATIVE_TYPES:
                 continue
-            if not p7.isdigit() or prefix_missions[p7] != {mid} or p7 in ambiguous_prefixes:
+            # Reused dialogue elsewhere can share the prefix. Explicitly moved
+            # performances still prove the gaps between their own timeline anchors.
+            explicitly_moved = (
+                self.performance_owners.get(script) == mid
+                and script in self.performance_paths
+                and script.split("/Mission/", 1)[1].split("/", 1)[0] != mid
+            )
+            if not p7.isdigit() or p7 in ambiguous_prefixes or (prefix_missions[p7] != {mid} and not explicitly_moved):
                 continue
             path = (self.root / script).resolve()
             if not path.is_relative_to(self.root.resolve()) or not path.is_file():
@@ -990,6 +1185,8 @@ class DatasetBuilder:
                 anchors.sort(key=lambda anchor: anchor["sentence_id"])
                 timeline_anchors[p7] = anchors
                 anchored_ranges[p7] = (mid, script, anchors[0]["sentence_id"], anchors[-1]["sentence_id"])
+                if explicitly_moved:
+                    explicitly_moved_timelines.add((mid, script))
         unused_by_p7: dict[str, list[str]] = defaultdict(list)
         for sid in sorted(self.sentences, key=lambda s: int(s) if s.isdigit() else 0):
             if sid not in self.used_sentences and len(sid) == 9 and sid.isdigit():
@@ -1064,6 +1261,8 @@ class DatasetBuilder:
             explicit_missions = prefix_missions.get(p7, set())
             paths = paths_by_prefix.get(p7, set())
             mid, perf_script = VERIFIED_TIMELINES.get(p7, ("", ""))
+            if not mid and p7 in anchored_ranges and anchored_ranges[p7][:2] in explicitly_moved_timelines:
+                mid, perf_script = anchored_ranges[p7][:2]
             if mid and mid not in self.missions:
                 continue
             if not mid:
@@ -1276,6 +1475,7 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
         builder.save_recalls()
         from .version_metadata import apply_versions
         verified_versions = apply_versions(conn)
+        builder.apply_contextual_script_owners()
         stats = {
             "missions": conn.execute("SELECT count(*) FROM missions").fetchone()[0],
             "lines": builder.line_count, "chunks": builder.chunk_count,
@@ -1288,6 +1488,9 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
             "verified_scene_lines": verified_scene_lines,
             "timeline_recovered_lines": timeline_recovered_lines,
             "timeline_conflicts": builder.timeline_conflicts,
+            "script_ownership_conflicts": builder.ownership_conflicts,
+            "contextual_script_owners": builder.contextual_script_owners,
+            "reviewed_scene_contexts": builder.reviewed_scene_contexts,
             "unverified_timeline_groups": builder.unverified_timeline_groups,
             "preserved_embedding_inputs": builder.preserved_embedding_inputs,
             "excluded_unlinked_sentences": unlinked_sentence_count,
@@ -1432,6 +1635,18 @@ def _collapse_mirrored_scripts(lines: list[dict], ordered_scripts: set[str] | No
     return surviving, aliases
 
 
+@cache
+def _dialogue_origins() -> dict:
+    return json.loads(DIALOGUE_ORIGINS.read_text(encoding="utf-8"))
+
+
+def dialogue_origin(script: str, sentence_id: str) -> dict | None:
+    entry = _dialogue_origins().get(script.split("::timeline-", 1)[0])
+    if entry and sentence_id in entry["sentence_ids"]:
+        return {"title": entry["title"], "origins": entry["origins"]}
+    return None
+
+
 def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
                 script: str | None = None, offset: int = 0, limit: int = 1000) -> dict:
     limit = max(1, min(limit, 1000))
@@ -1494,6 +1709,8 @@ def get_mission(path: Path | str, mission_id: str, line_id: str | None = None,
         for item in lines:
             if label := VERIFIED_SCENE_LABELS.get(item["script"]):
                 item["scene_label"] = label
+            if origin := dialogue_origin(item["script"], item["sentence_id"]):
+                item["dialogue_origin"] = origin
         scripts = sorted({row["script"] for row in lines})
         edges = []
         if scripts:

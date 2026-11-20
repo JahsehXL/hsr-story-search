@@ -164,7 +164,8 @@ def main():
             if index % 20 == 0 or index == len(titles):
                 print(f"Checked {index}/{len(titles)} task names, found {len(pages)} explicit versions", flush=True)
     mappings, coverage = build_mappings(missions, pages)
-    # A partial/offline refresh retains previously verified records for matching identities.
+    # Retain verified entries for matching identities when the refresh has no result.
+    # Keep independently reviewed records when a wiki refresh has a result as well.
     if args.output.exists():
         previous = json.loads(args.output.read_text(encoding="utf-8")).get("missions", [])
         current = {m["id"]: m for m in mappings}
@@ -172,13 +173,16 @@ def main():
         for entry in previous:
             identity = identities.get(entry["id"])
             if identity and all(identity[k] == entry[k] for k in ("name", "chapter", "world", "type")):
-                current.setdefault(entry["id"], entry)
+                if entry["method"] == "versioned-gameplay-recording":
+                    current[entry["id"]] = entry
+                else:
+                    current.setdefault(entry["id"], entry)
         mappings = sorted(current.values(), key=lambda e: e["id"])
     coverage["verified_missions"] = len(mappings)
     coverage["verified_by_type"] = dict(Counter(e["type"] for e in mappings))
     document = {"schema_version": 1, "generated_at": datetime.now(timezone.utc).isoformat(),
-                "description": "Exact task infobox release versions. Unknown missions remain unclassified.",
-                "attribution": "BWIKI contributors, CC BY-NC-SA 4.0. Each record links its source task page.",
+                "description": "Verified task release versions. Unknown missions remain unclassified.",
+                "attribution": "BWIKI contributors, CC BY-NC-SA 4.0 for wiki records. Each record links its evidence.",
                 "coverage": coverage, "missions": mappings}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(".tmp")

@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from backend.version_metadata import apply_versions, load_metadata, normalize_name
-from scripts.sync_versions import build_mappings, fetch_page, parse_infobox
+from scripts.sync_versions import build_mappings, fetch_page, main, parse_infobox
 
 
 def mission(identifier="123", **values):
@@ -63,7 +63,12 @@ def test_applier_preserves_curated_values_and_checks_mission_identity():
 def test_metadata_validation_and_bundled_catalog(tmp_path):
     entries = load_metadata()
     assert len(entries) >= 450
-    assert all(e["source"].startswith("https://wiki.biligame.com/sr/") for e in entries)
+    for entry in entries:
+        if entry["method"] == "versioned-gameplay-recording":
+            assert entry["source"].startswith("https://www.bilibili.com/video/")
+        else:
+            assert entry["method"].startswith("bwiki-")
+            assert entry["source"].startswith("https://wiki.biligame.com/sr/")
     target = tmp_path / "metadata.json"
     target.write_text(json.dumps({"schema_version": 1, "missions": [entries[0], entries[0]]}), encoding="utf-8")
     with pytest.raises(ValueError):
@@ -73,6 +78,23 @@ def test_metadata_validation_and_bundled_catalog(tmp_path):
 def test_name_normalization_keeps_meaningful_punctuation():
     assert normalize_name("模拟宇宙• 始发测试") == normalize_name("模拟宇宙·始发测试")
     assert normalize_name("任务·一") != normalize_name("任务一")
+
+
+def test_wiki_sync_retains_reviewed_gameplay_version(tmp_path, monkeypatch):
+    database, output = tmp_path / "story.db", tmp_path / "versions.json"
+    identity = mission()
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE missions (id,name,chapter,world,type)")
+        connection.execute("INSERT INTO missions VALUES (:id,:name,:chapter,:world,:type)", identity)
+    records, _ = build_mappings([identity], [page()])
+    reviewed = {**records[0], "version": "2.1", "method": "versioned-gameplay-recording",
+                "source": "https://www.bilibili.com/video/example/"}
+    output.write_text(json.dumps({"missions": [reviewed]}), encoding="utf-8")
+    monkeypatch.setattr("scripts.sync_versions.fetch_page", lambda *args: page())
+    monkeypatch.setattr("sys.argv", ["sync_versions", "--database", str(database),
+                                    "--output", str(output), "--cache", str(tmp_path / "cache")])
+    main()
+    assert load_metadata(output) == [reviewed]
 
 
 def test_offline_cache_miss_or_interrupted_cache_is_recoverable(tmp_path):

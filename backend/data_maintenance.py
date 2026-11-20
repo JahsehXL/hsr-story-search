@@ -98,6 +98,7 @@ def inspect_source(source: Path | str) -> dict:
         for task_type in types:
             task_types[task_type] = task_types.get(task_type, 0) + 1
     inputs = set(textmaps + list((root / "ExcelOutput").glob("*.json")) + scripts)
+    inputs.update((root / "Config").glob("SpecialMissionIDPair.json"))
     for tree in ("Config/Level", "Config/LevelOutput", "Story/BattlePerformance"):
         inputs.update((root / tree).rglob("*.json"))
     digest = hashlib.sha256()
@@ -114,7 +115,7 @@ def inspect_source(source: Path | str) -> dict:
             "sentence_records": len(sentences), "scripts": len(scripts),
             "empty_scripts": empty_scripts,
             "timeline_scripts": timeline_scripts, "task_types": dict(sorted(task_types.items())),
-            "input_files": len(inputs), "input_sha256": digest.hexdigest(), "input_fingerprint_version": 2,
+            "input_files": len(inputs), "input_sha256": digest.hexdigest(), "input_fingerprint_version": 3,
             "importer_version": IMPORTER_VERSION}
 
 
