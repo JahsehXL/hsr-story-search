@@ -160,7 +160,7 @@ function SelectField({ label, value, values, onChange, searchable = false, forma
   </div>;
 }
 
-function Modal({ title, close, children, wide = false }: { title: string; close: () => void; children: ReactNode; wide?: boolean }) {
+function Modal({ title, close, children, wide = false, className = '' }: { title: string; close: () => void; children: ReactNode; wide?: boolean; className?: string }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const onClose = useRef(close);
@@ -179,7 +179,7 @@ function Modal({ title, close, children, wide = false }: { title: string; close:
     document.addEventListener('keydown', key);
     return () => { document.removeEventListener('keydown', key); previous?.focus(); };
   }, []);
-  return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}><section ref={dialogRef} className={`modal ${wide ? 'modal-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+  return <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}><section ref={dialogRef} className={`modal ${wide ? 'modal-wide' : ''} ${className}`.trim()} role="dialog" aria-modal="true" aria-label={title}>
     <header className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={close} ref={closeRef} aria-label="关闭">×</button></header>{children}
   </section></div>;
 }
@@ -355,7 +355,7 @@ function FeedbackModal({
     </div>}
     <div className="feedback-intro">
       <p>发现剧情遗漏、顺序错乱，或者有任何建议与想说的话，都可以在这里直接发送，支持选择或直接粘贴截图。</p>
-      <p>如果方便，也可以在正文结尾留下你的称呼或联系方式；也可以去抖音私信 / 评论，或者前往 GitHub 仓库反馈。抖音对应视频的评论区里也放有更新日志，可以查看近期的问题修复与更新进度（最新改动与详细记录一切以 <a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> 中为准）。</p>
+      <p>如果方便，也可以在正文结尾留下你的称呼或联系方式；也可以去抖音私信 / 评论，或者前往 GitHub 仓库反馈。最新改动与详细记录一切以 <a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> 中为准。</p>
     </div>
     <div className="field">
       <span className="feedback-field-title">反馈类型</span>
@@ -982,7 +982,7 @@ export default function App() {
     {showAnnouncement && (() => {
       const noteParagraphs = parseNoteParagraphs(announcement.note_body);
       const changelogSections = parseChangelogBody(announcement.changelog_body);
-      return <Modal title={announcement.title || '站点公告与更新日志'} close={closeAnnouncement}>
+      return <Modal title={announcement.title || '站点公告与更新日志'} close={closeAnnouncement} className="modal-announcement">
         <div className="announcement-body">
           {noteParagraphs.length > 0 && <section className="announcement-note" aria-label={announcement.note_title || '写在前面'}>
             <div className="announcement-note-head">
