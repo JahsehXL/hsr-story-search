@@ -355,7 +355,7 @@ function FeedbackModal({
     </div>}
     <div className="feedback-intro">
       <p>发现剧情遗漏、顺序错乱，或者有任何建议与想说的话，都可以在这里直接发送，支持选择或直接粘贴截图。</p>
-      <p>如果方便，也可以在正文结尾留下你的称呼或联系方式；也可以去抖音私信 / 评论，或者前往 GitHub 仓库反馈。最新改动与详细记录一切以 <a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> 中为准。</p>
+      <p>如果方便，也可以在正文结尾留下你的称呼或联系方式；也可以去抖音私信 / 评论，或者前往 GitHub 仓库反馈。最新改动与详细记录一切以 <a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a> 和公告栏中为准。</p>
     </div>
     <div className="field">
       <span className="feedback-field-title">反馈类型</span>
