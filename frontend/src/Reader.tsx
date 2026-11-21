@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { cleanMissionName, displayText, Empty, errorText, Highlight, missionTypeClass, speakerName, versionText } from './presentation';
-import { buildStoryModel, formatAltLabel, resolveFullMissionStory, sceneStatusLabel, shareStoryAnchor, shouldShowTrailingExtraDivider, storyBlocks } from './story';
+import { altTagMatches, buildStoryModel, formatAltLabel, resolveFullMissionStory, sceneStatusLabel, shareStoryAnchor, shouldShowTrailingExtraDivider, storyBlocks } from './story';
 import StoryBlock from './StoryBlock';
 import type { ChoiceSet } from './story';
 import type { DialogueLine, DialogueOrigin, MissionResponse, Result } from './types';
@@ -39,9 +39,10 @@ function DialogueOrigins({ origin }: { origin: DialogueOrigin }) {
 }
 
 function Dialogue({ line, query, hit, onShare }: { line: DialogueLine; query: string; hit: boolean; onShare: (line: DialogueLine) => void }) {
-  const name = speakerName(line.speaker);
-  const isPlayer = name === '开拓者';
-  return <article id={`line-${line.id}`} className={`dialogue-line ${hit ? 'line-hit' : ''} ${isPlayer ? 'is-player' : ''}`}>
+  const isNarration = !line.speaker && !line.kind.includes('option');
+  const name = isNarration ? '旁白' : speakerName(line.speaker);
+  const isPlayer = !isNarration && name === '开拓者';
+  return <article id={`line-${line.id}`} className={`dialogue-line ${hit ? 'line-hit' : ''} ${isPlayer ? 'is-player' : ''} ${isNarration ? 'is-narration' : ''}`}>
     <div className="speaker"><span className="speaker-name">{name}</span></div>
     <div className="dialogue-body">
       <p><Highlight text={line.text} query={query} /></p>
@@ -234,7 +235,7 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
   const typeKey = origin ? '' : mission?.type || selected.type || '';
   const verText = origin ? '对白版本待核实' : versionText(mission?.version || selected.version, mission?.version_status || selected.version_status);
   const copySource = [name, !origin && chapter !== name ? chapter : '', world, verText].filter(Boolean).join(' · ');
-  const copyDialogue = () => onCopy(visibleLines.length ? visibleLines.map(line => `${speakerName(line.speaker)}：${displayText(line.text)}`).join('\n\n') : `${speakerName(selected.speaker)}：${selected.text}`);
+  const copyDialogue = () => onCopy(visibleLines.length ? visibleLines.map(line => (!line.speaker && !line.kind.includes('option') ? displayText(line.text) : `${speakerName(line.speaker)}：${displayText(line.text)}`)).join('\n\n') : (!selected.speaker && !selected.kind?.includes('option') ? displayText(selected.text) : `${speakerName(selected.speaker)}：${selected.text}`));
   const hasMore = detail?.has_more ?? (detail ? detail.total > (detail.offset || 0) + detail.lines.length : false);
   const hasEarlier = (detail?.offset || 0) > 0;
 
@@ -288,6 +289,7 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
           {groups.map((group, groupIndex) => {
             const isBranchFollowup = Boolean(group.branch && selectedTriggers.has(JSON.stringify([group.script, group.branch])));
             const altSiblings = group.altSlot ? model.altGroups.get(group.altSlot) : undefined;
+            const showAltBar = Boolean(altSiblings && group.altSlot && groups.findIndex(item => item.altSlot === group.altSlot) === groupIndex);
             const startsScene = groups[groupIndex - 1]?.script !== group.script;
             const showExtraDivider = shouldShowTrailingExtraDivider(groups[groupIndex - 1]?.script, group.script, orderedScripts, optionalScripts);
             const sceneLabel = sceneStatusLabel(group.script, group.lines[0]?.scene_label);
@@ -305,14 +307,14 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
               {startsScene && sceneLabel && <div className="branch-followup-header"><span>{sceneLabel}</span></div>}
               {sceneOrigin && <DialogueOrigins origin={sceneOrigin} />}
               {isBranchFollowup && <div className="branch-followup-header"><span>↳ 当前所选回答的后续分支对白</span></div>}
-              {altSiblings && group.altSlot && <div className="alt-branch-bar" role="group" aria-label={group.altKind === 'rand' ? '随机对白变体' : '条件分支'}>
+              {showAltBar && altSiblings && group.altSlot && <div className="alt-branch-bar" role="group" aria-label={group.altKind === 'rand' ? '随机对白变体' : '条件分支'}>
                 <span className="alt-branch-title">
                   {group.altKind === 'rand' ? `随机对白（共 ${altSiblings.length} 种变体）` : `条件分支（互斥，共 ${altSiblings.length} 种情况）`}
                 </span>
                 <div className="alt-branch-tabs">
                   {altSiblings.map(sibling => {
-                    const active = sibling.key === group.key;
-                    const containsHit = sibling.lines.some(line => line.id === hitId);
+                    const active = sibling.key === resolved.altSelections[group.altSlot!];
+                    const containsHit = Boolean(hitGroup && hitGroup.altSlot === group.altSlot && hitGroup.altTag && sibling.altTag && altTagMatches(hitGroup.altTag, sibling.altTag));
                     return <button
                       key={sibling.key}
                       type="button"

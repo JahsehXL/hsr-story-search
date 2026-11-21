@@ -291,6 +291,51 @@ test('mutually exclusive alt branches, inline alt blocks, nested options, and 10
     line('c2-a', 0, 'start', { kind: 'option', position: 10100, trigger: 'c' }),
   ]);
   assert.equal(stride.groups[0].segments.length, 2);
+
+  // Nested alt branches where parent AND child both carry lines (e.g.《虎克的礼物》Act201090201)
+  const nestedAlt = buildStoryModel([
+    line('bid-start', 0, '', { position: 40000 }),
+    line('bid-parent-1', 0, 'sequence:0#alt:5#cond:1', { position: 50000 }),
+    line('bid-c1-1a', 0, 'sequence:0#alt:5#cond:1#cond:1', { position: 50100 }),
+    line('bid-c1-1b', 0, 'sequence:0#alt:5#cond:1#cond:1', { position: 50200 }),
+    line('bid-c1-2', 0, 'sequence:0#alt:5#cond:1#cond:2', { position: 50300 }),
+    line('bid-c2-1', 0, 'sequence:0#alt:5#cond:2#cond:1', { position: 50400 }),
+    line('bid-c2-2', 0, 'sequence:0#alt:5#cond:2#cond:2', { position: 50600 }),
+    line('bid-next', 1, '201090201_next', { position: 0 }),
+  ], [
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:5#cond:1', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:5#cond:1#cond:1', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:5#cond:1#cond:2', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:5#cond:2#cond:1', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:5#cond:2#cond:2', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0#alt:5#cond:1#cond:1', target: '201090201_next', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0#alt:5#cond:1#cond:2', target: '201090201_next', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0#alt:5#cond:2#cond:1', target: '201090201_next', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0#alt:5#cond:2#cond:2', target: '201090201_next', kind: 'continuation' },
+  ]);
+  const altSlot = nestedAlt.groups.find(g => g.altSlot)!.altSlot!;
+  const leaves = nestedAlt.altGroups.get(altSlot)!;
+  assert.deepEqual(leaves.map(g => g.altTag), ['cond:1#cond:1', 'cond:1#cond:2', 'cond:2#cond:1', 'cond:2#cond:2']);
+  assert.deepEqual(resolveFullMissionStory(nestedAlt, 'bid-c1-1a').groups.map(g => g.lines[0].id), ['bid-start', 'bid-parent-1', 'bid-c1-1a', 'bid-next']);
+  assert.deepEqual(resolveFullMissionStory(nestedAlt, 'bid-parent-1').groups.map(g => g.lines[0].id), ['bid-start', 'bid-parent-1', 'bid-c1-1a', 'bid-next']);
+  assert.deepEqual(resolveFullMissionStory(nestedAlt, 'bid-c1-2').groups.map(g => g.lines[0].id), ['bid-start', 'bid-parent-1', 'bid-c1-2', 'bid-next']);
+  assert.deepEqual(resolveFullMissionStory(nestedAlt, '', {}, { [altSlot]: leaves[2].key }).groups.map(g => g.lines[0].id), ['bid-start', 'bid-c2-1', 'bid-next']);
+
+  // Parent lines both before AND after a nested alt branch remain in chronological position order
+  const parentSandwich = buildStoryModel([
+    line('root', 0, '', { position: 0 }),
+    line('p-before', 0, 'sequence:0#alt:1#cond:1', { position: 100 }),
+    line('child-a', 0, 'sequence:0#alt:1#cond:1#cond:1', { position: 200 }),
+    line('child-b', 0, 'sequence:0#alt:1#cond:1#cond:2', { position: 300 }),
+    line('p-after', 0, 'sequence:0#alt:1#cond:1', { position: 400 }),
+    line('other', 0, 'sequence:0#alt:1#cond:2', { position: 500 }),
+  ], [
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:1#cond:1', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:1#cond:1#cond:1', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:1#cond:1#cond:2', kind: 'continuation' },
+    { script: 'script-a', source: 'sequence:0', target: 'sequence:0#alt:1#cond:2', kind: 'continuation' },
+  ]);
+  assert.deepEqual(resolveFullMissionStory(parentSandwich, 'child-a').groups.map(g => g.lines[0].id), ['root', 'p-before', 'child-a', 'p-after']);
 });
 
 test('scene labels and trailing extra divider avoid clutter across storyline scripts', () => {

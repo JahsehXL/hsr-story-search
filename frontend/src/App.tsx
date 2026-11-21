@@ -5,7 +5,8 @@ import { createSemanticSearchClient, indexReady, loadVisitorEndpoint, loadVisito
 import type { SemanticContext } from './semantic';
 import Reader from './Reader';
 import { cleanMissionName, displayText, speakerName, errorText, missionTypeClass, versionText, Highlight, Empty } from './presentation';
-import type { Bookmark, Catalog, DialogueLine, FeedbackContext, Filters, MissionResponse, Result, SearchMode, SearchResponse, Status } from './types';
+import { buildMissionHash, buildSearchHash, hasActiveFilters, parseRoute } from './route';
+import type { Bookmark, Catalog, DialogueLine, FeedbackContext, Filters, MatchedMission, MissionResponse, Result, SearchMode, SearchResponse, Status } from './types';
 
 const Admin = lazy(() => import('./Admin'));
 
@@ -41,13 +42,6 @@ const labels: Record<string, string> = {
   build_index: '建立语义索引', install_package: '安装数据包', check_update: '检查数据更新', rollback: '恢复上一版',
 };
 
-function readRoute() {
-  const [path, search = ''] = location.hash.replace(/^#/, '').split('?');
-  const params = new URLSearchParams(search);
-  return { path, query: params.get('q') || '', mission: params.get('mission') || '', line: params.get('line') || '',
-    script: params.get('script') || '', snapshot: params.get('snapshot') || '' };
-}
-
 function formatNumber(value: number | string | undefined) { return typeof value === 'number' ? value.toLocaleString('zh-CN') : value || '—'; }
 
 function matchLabel(result: Result) {
@@ -57,11 +51,13 @@ function matchLabel(result: Result) {
   return labels[result.match_type] || '相关对白';
 }
 
-function SelectField({ label, value, values, onChange, searchable = false, format = (v: string) => labels[v] || v }: {
+function SelectField({ label, value, values, onChange, searchable = false, format = (v: string) => labels[v] || v, onSearch }: {
   label: string; value: string; values: string[]; onChange: (v: string) => void; searchable?: boolean; format?: (value: string) => string;
+  onSearch?: (query: string, signal: AbortSignal) => Promise<string[]>;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [remoteValues, setRemoteValues] = useState<string[] | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -82,10 +78,36 @@ function SelectField({ label, value, values, onChange, searchable = false, forma
     };
   }, [open, searchable]);
 
+  useEffect(() => {
+    if (!open || !searchable || !onSearch) {
+      setRemoteValues(null);
+      return;
+    }
+    const q = search.trim();
+    if (!q) {
+      setRemoteValues(null);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void onSearch(q, controller.signal)
+        .then(items => { if (!controller.signal.aborted) setRemoteValues(items); })
+        .catch(() => { if (!controller.signal.aborted) setRemoteValues(null); });
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [open, searchable, search, onSearch]);
+
   const displayValue = value ? format(value) : '全部';
-  const filtered = searchable && search.trim()
-    ? values.filter(v => format(v).toLowerCase().includes(search.trim().toLowerCase()))
+  const trimmedSearch = search.trim();
+  const localFiltered = searchable && trimmedSearch
+    ? values.filter(v => format(v).toLowerCase().includes(trimmedSearch.toLowerCase()))
     : values;
+  const filtered = searchable && trimmedSearch && remoteValues
+    ? [...new Set([...remoteValues, ...localFiltered])]
+    : localFiltered;
 
   return <div ref={wrapRef} className={`filter-dropdown ${value ? 'has-value' : ''} ${open ? 'is-open' : ''}`}>
     <button
@@ -109,9 +131,9 @@ function SelectField({ label, value, values, onChange, searchable = false, forma
           placeholder={`搜索或输入${label}…`}
           aria-label={`搜索${label}`}
           onKeyDown={e => {
-            if (e.key === 'Enter' && search.trim()) {
+            if (e.key === 'Enter' && trimmedSearch) {
               e.preventDefault();
-              onChange(filtered[0] || search.trim());
+              onChange(filtered[0] || trimmedSearch);
               setOpen(false);
             }
           }}
@@ -121,8 +143,8 @@ function SelectField({ label, value, values, onChange, searchable = false, forma
         <button type="button" role="option" aria-selected={!value} className={`filter-option ${!value ? 'is-selected' : ''}`} onClick={() => { onChange(''); setOpen(false); }}>
           <span>全部</span>{!value && <span aria-hidden="true">✓</span>}
         </button>
-        {searchable && search.trim() && !values.includes(search.trim()) && <button type="button" role="option" aria-selected={value === search.trim()} className="filter-option" onClick={() => { onChange(search.trim()); setOpen(false); }}>
-          <span>查找「{search.trim()}」</span>
+        {searchable && trimmedSearch && !filtered.includes(trimmedSearch) && <button type="button" role="option" aria-selected={value === trimmedSearch} className="filter-option" onClick={() => { onChange(trimmedSearch); setOpen(false); }}>
+          <span>查找「{trimmedSearch}」</span>
         </button>}
         {filtered.map(v => <button key={v} type="button" role="option" aria-selected={value === v} className={`filter-option ${value === v ? 'is-selected' : ''}`} onClick={() => { onChange(v); setOpen(false); }}>
           <span>{format(v)}</span>{value === v && <span aria-hidden="true">✓</span>}
@@ -419,14 +441,14 @@ function FeedbackModal({
 }
 
 export default function App() {
-  const initial = useRef(readRoute());
+  const initial = useRef(parseRoute(location.hash));
   const [status, setStatus] = useState<Status | null>(null);
   const readable = Boolean(status?.authenticated || (status?.mode === 'server' && status.public_readonly));
   const [bootError, setBootError] = useState('');
   const [catalog, setCatalog] = useState<Catalog>(emptyCatalog);
   const [query, setQuery] = useState(initial.current.query);
   const [searchedQuery, setSearchedQuery] = useState(initial.current.query);
-  const [filters, setFilters] = useState<Filters>(emptyFilters);
+  const [filters, setFilters] = useState<Filters>(initial.current.filters);
   const [theme, setTheme] = useState(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
   function toggleTheme() {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -434,7 +456,7 @@ export default function App() {
     setTheme(next);
     try { localStorage.setItem('hsr-theme', next); } catch { /* The current session still switches theme. */ }
   }
-  const [mode, setMode] = useState<SearchMode>('text');
+  const [mode, setMode] = useState<SearchMode>(initial.current.mode);
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState('');
@@ -459,7 +481,7 @@ export default function App() {
   const readerController = useRef<AbortController | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const booted = useRef(false);
-  const activeSearch = useRef({ filters: emptyFilters, mode: 'text' as SearchMode, query: '' });
+  const activeSearch = useRef({ filters: initial.current.filters, mode: initial.current.mode, query: initial.current.query });
   const activeSemantic = useRef<SemanticContext | null>(null);
   const semanticClient = useRef(createSemanticSearchClient());
 
@@ -527,13 +549,9 @@ export default function App() {
     readerController.current = controller;
     setSelected(result); setDetail(null); setReaderError(''); setReaderQuery(routeQuery);
     if (updateRoute) {
-      const p = new URLSearchParams();
-      if (routeQuery) p.set('q', routeQuery);
-      if (result.mission_id) p.set('mission', result.mission_id);
-      if (result.line_id) p.set('line', result.line_id);
-      if (result.script) p.set('script', result.script);
-      if (snapshot) p.set('snapshot', snapshot);
-      history.replaceState(null, '', `#/search?${p.toString()}`);
+      history.replaceState(null, '', buildMissionHash({ ...activeSearch.current, query: routeQuery }, {
+        mission_id: result.mission_id, line_id: result.line_id, script: result.script, snapshot,
+      }));
     }
     if (!result.mission_id) { setReading(false); return; }
     setReading(true);
@@ -545,11 +563,18 @@ export default function App() {
     finally { if (generation === readerId.current) setReading(false); }
   }, [searchedQuery]);
 
-  const runSearch = useCallback(async (value: string, offset = 0, overrideFilters?: Filters) => {
+  const runSearch = useCallback(async (
+    value: string,
+    offset = 0,
+    overrideFilters?: Filters,
+    overrideMode?: SearchMode,
+    options?: { keepReader?: boolean; updateRoute?: boolean },
+  ) => {
     const activeFilters = overrideFilters ?? filters;
-    const hasFilter = Object.values(activeFilters).some(Boolean);
+    const activeMode = overrideMode ?? mode;
+    const hasFilter = hasActiveFilters(activeFilters);
     if (!value.trim() && !hasFilter) { searchInput.current?.focus(); return; }
-    const criteria = offset > 0 ? activeSearch.current : { query: value.trim(), filters: { ...activeFilters }, mode };
+    const criteria = offset > 0 ? activeSearch.current : { query: value.trim(), filters: { ...activeFilters }, mode: activeMode };
     const semanticContext = offset > 0 ? activeSemantic.current : status ? { snapshot: status.data.snapshot, embedding: status.embedding } : null;
     if (criteria.mode === 'hybrid' && criteria.query && semanticContext && indexReady(semanticContext.embedding) && !visitorKey && !serverKeyReady(semanticContext.embedding)) {
       setShowVisitorKey(true);
@@ -566,29 +591,46 @@ export default function App() {
       const data = await searchRequest<SearchResponse>({ ...criteria, limit: 30, offset, snapshot: offset > 0 ? response?.snapshot : semanticContext?.snapshot || undefined }, prepared, controller.signal);
       if (generation !== searchId.current) return;
       setSearchedQuery(criteria.query);
-      setResponse(old => offset > 0 && old ? { ...data, results: [...old.results, ...data.results] } : data);
+      setResponse(old => offset > 0 && old ? { ...data, matched_missions: old.matched_missions, results: [...old.results, ...data.results] } : data);
       if (offset === 0) {
         activeSearch.current = criteria;
         activeSemantic.current = semanticContext;
-        clearReader();
-        history.replaceState(null, '', criteria.query ? `#/search?q=${encodeURIComponent(criteria.query)}` : '#/search');
+        if (!options?.keepReader) clearReader();
+        if (options?.updateRoute !== false) {
+          history.replaceState(null, '', buildSearchHash(criteria));
+        }
       }
     } catch (err) { if (generation === searchId.current) setSearchError(errorText(err)); }
     finally { if (generation === searchId.current) setSearching(false); }
   }, [filters, mode, response?.snapshot, status, visitorKey, visitorEndpoint, clearReader]);
 
+  const closeReader = useCallback(() => {
+    clearReader();
+    const criteria = activeSearch.current;
+    if (criteria.query.trim() || hasActiveFilters(criteria.filters)) {
+      history.replaceState(null, '', buildSearchHash(criteria));
+      if (!response) {
+        void runSearch(criteria.query, 0, criteria.filters, criteria.mode, { updateRoute: false });
+      }
+    } else {
+      history.replaceState(null, '', '#/');
+    }
+  }, [clearReader, response, runSearch]);
+
   const applyFilters = useCallback((nextFilters: Filters) => {
     setFilters(nextFilters);
-    if (query.trim() || Object.values(nextFilters).some(Boolean)) {
+    if (query.trim() || hasActiveFilters(nextFilters)) {
       void runSearch(query, 0, nextFilters);
     } else {
       setResponse(null);
       searchId.current++;
       searchController.current?.abort();
       setSearching(false);
+      activeSearch.current = { query: '', filters: emptyFilters, mode };
       clearReader();
+      history.replaceState(null, '', '#/');
     }
-  }, [query, runSearch, clearReader]);
+  }, [query, mode, runSearch, clearReader]);
 
   useEffect(() => {
     const synchronizeKey = (event: StorageEvent) => {
@@ -606,7 +648,7 @@ export default function App() {
   useEffect(() => {
     if (!readable) return;
     function openRoute() {
-      const route = readRoute();
+      const route = parseRoute(location.hash);
       searchId.current++;
       searchController.current?.abort();
       setSearching(false);
@@ -614,11 +656,20 @@ export default function App() {
       setResponse(null);
       setQuery(route.query);
       setSearchedQuery(route.query);
+      setFilters(route.filters);
+      setMode(route.mode);
+      activeSearch.current = { query: route.query.trim(), filters: route.filters, mode: route.mode };
       clearReader();
+      const hasCriteria = Boolean(route.query.trim() || hasActiveFilters(route.filters));
       if (route.mission) {
         const result: Result = { chunk_id: 0, mission_id: route.mission, mission_name: '', chapter: '', world: '', version: '', version_status: 'unknown', speaker: '', text: '', line_id: route.line, script: route.script, branch: '', match_type: '', score: 0 };
         void selectResult(result, route.snapshot, false, route.query);
-      } else if (route.query) void runSearch(route.query);
+        if (hasCriteria) {
+          void runSearch(route.query, 0, route.filters, route.mode, { keepReader: true, updateRoute: false });
+        }
+      } else if (hasCriteria) {
+        void runSearch(route.query, 0, route.filters, route.mode, { updateRoute: false });
+      }
     }
     if (!booted.current) {
       booted.current = true;
@@ -697,11 +748,26 @@ export default function App() {
     catch (err) { if (generation === readerId.current) setToast(errorText(err)); } finally { if (generation === readerId.current) setReading(false); }
   }
 
+  const searchCharacters = useCallback(
+    (q: string, signal: AbortSignal) =>
+      request<{ characters: string[] }>(`characters?q=${encodeURIComponent(q)}&limit=80`, { signal }).then(data => data.characters),
+    [],
+  );
+
   if (!status) return <div className="boot-screen"><div className="brand-mark">✦</div><h1>星轨档案</h1><p>{bootError || '正在打开档案…'}</p>{bootError && <button className="secondary" onClick={() => location.reload()}>重新连接</button>}</div>;
   if (!readable) return <div className="login-screen"><div className="login-stars" aria-hidden="true" /><Login local={status.mode === 'local'} onSuccess={() => { void refresh(); }} /><div className="login-footer">星轨档案 · 崩坏：星穹铁道剧情检索</div></div>;
 
+  const openMissionShortcut = (item: MatchedMission) => {
+    const result: Result = {
+      chunk_id: 0, mission_id: item.mission_id, mission_name: item.mission_name, chapter: item.chapter,
+      world: item.world, type: item.type, version: item.version, version_status: item.version_status,
+      speaker: '', text: '', line_id: '', script: '', branch: '', match_type: 'exact', matched_field: 'mission', score: 1,
+    };
+    void selectResult(result, response?.snapshot);
+  };
+
   return <div className={`app-shell ${selected ? 'has-selection' : ''}`}>
-    <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); searchId.current++; searchController.current?.abort(); setSearching(false); clearReader(); setResponse(null); setQuery(''); setSearchedQuery(''); history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
+    <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); searchId.current++; searchController.current?.abort(); setSearching(false); clearReader(); setResponse(null); setQuery(''); setSearchedQuery(''); setFilters(emptyFilters); setMode('text'); activeSearch.current = { filters: emptyFilters, mode: 'text', query: '' }; history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
       <div className="header-actions">{status.mode === 'server' && <a className="header-button" href="/" aria-label="返回首页" title="返回首页"><span aria-hidden="true">←</span><span>返回首页</span></a>}<span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}<button className="header-button theme-toggle" onClick={toggleTheme} aria-label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'} title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button></div>
     </header>
     <section className="search-section">
@@ -737,7 +803,7 @@ export default function App() {
             <SelectField label="世界" value={filters.world} values={catalog.worlds} onChange={v => applyFilters({ ...filters, world: v })} />
             <SelectField label="版本" value={filters.version} values={catalog.versions} onChange={v => applyFilters({ ...filters, version: v })} />
             <SelectField label="任务类型" value={filters.type} values={catalog.types} onChange={v => applyFilters({ ...filters, type: v })} />
-            <SelectField label="角色" value={filters.character} values={catalog.characters} searchable format={speakerName} onChange={v => applyFilters({ ...filters, character: v })} />
+            <SelectField label="角色" value={filters.character} values={catalog.characters} searchable format={speakerName} onSearch={searchCharacters} onChange={v => applyFilters({ ...filters, character: v })} />
             {Object.values(filters).some(Boolean) && <button type="button" className="text-button clear-filters" onClick={() => applyFilters(emptyFilters)}>重置筛选</button>}
           </div>
         </div>
@@ -747,7 +813,21 @@ export default function App() {
       <div className="results-scroll" aria-busy={searching} aria-live="polite">
         {searchError && <div className="inline-alert" role="alert">{searchError}</div>}
         {response?.notice && <div className="search-notice">{response.notice}</div>}
-        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{(mode === 'hybrid' ? ['流萤带开拓者逛游乐园', '丹恒与景元在幽囚狱交谈', '卡芙卡在空间站唤醒开拓者'] : ['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨']).map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : response.results.length === 0 ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{response.results.map((result, index) => {
+        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{(mode === 'hybrid' ? ['流萤带开拓者逛游乐园', '丹恒与景元在幽囚狱交谈', '卡芙卡在空间站唤醒开拓者'] : ['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨']).map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : (response.results.length === 0 && !response.matched_missions?.length) ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{Boolean(response.matched_missions?.length) && <div className="matched-missions" aria-label="同名任务直达"><span className="matched-missions-title">同名任务直达</span>{response.matched_missions!.map(item => {
+          const title = cleanMissionName(item.mission_name, item.chapter, item.world);
+          const isSelected = selected?.mission_id === item.mission_id && !selected?.line_id;
+          return <button key={`mm:${item.mission_id}`} type="button" className={`mission-shortcut-card ${isSelected ? 'selected' : ''}`} onClick={() => openMissionShortcut(item)}>
+            <div className="result-topline">
+              <div className="result-badges">
+                {item.type && <span className={`mission-badge type-${missionTypeClass(item.type)}`}>{labels[item.type] || item.type}</span>}
+                <span className="world-badge">{item.world || '剧情对白'}</span>
+              </div>
+              <span className={!item.version ? 'pending-version' : 'version-tag'}>{versionText(item.version, item.version_status)}</span>
+            </div>
+            <h3>{title}{item.chapter && item.chapter !== title && <small className="result-chapter"> · {item.chapter}</small>}</h3>
+            <div className="result-bottom"><span>{item.line_count ? `共 ${formatNumber(item.line_count)} 条记录` : '任务名称精确匹配'}</span><span className="result-open">直达任务 <span>→</span></span></div>
+          </button>;
+        })}</div>}{response.results.map((result, index) => {
           const origin = result.dialogue_origin;
           const title = origin?.title || cleanMissionName(result.mission_name, result.chapter, result.world);
           return <button className={`result-card ${selected?.line_id === result.line_id && selected?.script === result.script ? 'selected' : ''}`} key={`${result.chunk_id}:${result.line_id}:${index}`} onClick={() => void selectResult(result, response.snapshot)}>
@@ -766,7 +846,7 @@ export default function App() {
         </button>; })}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
       </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>
     </section>
-    <Reader selected={selected} detail={detail} busy={reading} query={readerQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={clearReader} onVersionSave={saveVersion}
+    <Reader selected={selected} detail={detail} busy={reading} query={readerQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={closeReader} onVersionSave={saveVersion}
       onOpenCurrentForVersion={selected && status.data.snapshot && detail?.snapshot && detail.snapshot !== status.data.snapshot
         ? () => void selectResult(selected, status.data.snapshot, true, readerQuery) : undefined}
       onMore={() => void moreContext()} onEarlier={() => void moreContext(true)} />

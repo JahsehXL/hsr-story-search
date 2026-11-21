@@ -54,6 +54,10 @@ export function parseAltBranch(branch: string): { prefix: string; tag: string; k
   return { prefix: match[1], tag, kind: tag.startsWith('rand:') ? 'rand' : 'cond' };
 }
 
+export function altTagMatches(groupTag: string, selectedTag: string): boolean {
+  return groupTag === selectedTag || selectedTag.startsWith(`${groupTag}#`);
+}
+
 export function formatAltLabel(tag: string): string {
   return tag
     .split('#')
@@ -165,7 +169,11 @@ export function buildStoryModel(lines: DialogueLine[], edges: MissionResponse['e
     for (const line of group.lines) model.byLine.set(line.id, group);
   }
   for (const [slot, items] of rawAltGroups) {
-    if (items.length >= 2) model.altGroups.set(slot, items);
+    const allTags = [...new Set(items.map(item => item.altTag).filter(Boolean) as string[])];
+    const leafTags = allTags.filter(tag => !allTags.some(other => other.startsWith(`${tag}#`)));
+    if (leafTags.length >= 2) {
+      model.altGroups.set(slot, leafTags.map(tag => items.find(item => item.altTag === tag)!));
+    }
   }
   const relays = new Map<string, Set<string>>();
   for (const edge of edges) {
@@ -344,7 +352,9 @@ export function resolveFullMissionStory(
     while (queue.length) {
       const curr = queue.shift()!;
       if (curr.altSlot && model.altGroups.has(curr.altSlot) && !hitAltSelections[curr.altSlot]) {
-        hitAltSelections[curr.altSlot] = curr.key;
+        const leaves = model.altGroups.get(curr.altSlot)!;
+        const matchedLeaf = leaves.find(leaf => curr.altTag && leaf.altTag && altTagMatches(curr.altTag, leaf.altTag));
+        if (matchedLeaf) hitAltSelections[curr.altSlot] = matchedLeaf.key;
       }
       const currKey = branchKey(curr.script, curr.node);
       for (const parent of model.parents.get(currKey) || []) {
@@ -384,8 +394,12 @@ export function resolveFullMissionStory(
   const selections: Record<string, string> = { ...initialSelections, ...customSelections };
   const initialAltSelections: Record<string, string> = { ...defaultAltSelections, ...hitAltSelections };
   const altSelections: Record<string, string> = { ...initialAltSelections, ...customAltSelections };
-  const isAltAllowed = (group: StoryGroup) =>
-    !group.altSlot || !model.altGroups.has(group.altSlot) || altSelections[group.altSlot] === group.key;
+  const isAltAllowed = (group: StoryGroup) => {
+    if (!group.altSlot || !model.altGroups.has(group.altSlot)) return true;
+    const selectedKey = altSelections[group.altSlot];
+    const selectedTag = selectedKey ? model.byKey.get(selectedKey)?.altTag || '' : '';
+    return Boolean(group.altTag && selectedTag && altTagMatches(group.altTag, selectedTag));
+  };
 
   const rootKeys = new Set(model.groups.filter(group => {
     const key = branchKey(group.script, group.node);
@@ -467,13 +481,25 @@ export function resolveFullMissionStory(
         }
       }
 
-      const nextKeys: string[] = [];
+      const altNext: { key: string; pos: number }[] = [];
+      const otherNext: string[] = [];
+      const seenNext = new Set<string>();
       for (const target of targets) {
+        const isAltTarget = target.startsWith(altPrefix);
         for (const item of groupsAtDestination(model, group.script, target)) {
-          if (!visited.has(item.key) && isAltAllowed(item)) nextKeys.push(item.key);
+          if (!visited.has(item.key) && !seenNext.has(item.key) && isAltAllowed(item)) {
+            seenNext.add(item.key);
+            if (isAltTarget && item.sequence === group.sequence) {
+              altNext.push({ key: item.key, pos: item.lines[0]?.position ?? 0 });
+            } else {
+              otherNext.push(item.key);
+            }
+          }
         }
       }
-      if (nextRunKey && !visited.has(nextRunKey) && !nextKeys.includes(nextRunKey)) {
+      altNext.sort((a, b) => a.pos - b.pos);
+      const nextKeys = [...altNext.map(item => item.key), ...otherNext];
+      if (nextRunKey && !visited.has(nextRunKey) && !nextKeys.includes(nextRunKey) && !pending.includes(nextRunKey)) {
         nextKeys.push(nextRunKey);
       }
       if (nextKeys.length) {

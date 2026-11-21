@@ -8,6 +8,17 @@ import unicodedata
 from pathlib import Path
 
 DEFAULT_METADATA = Path(__file__).parent / "resources" / "mission_versions.json"
+WORLD_MIN_VERSION: dict[str, tuple[int, int]] = {
+    "匹诺康尼": (2, 0),
+    "翁法罗斯": (3, 0),
+    "二相乐园": (4, 0),
+    "千星城": (4, 5),
+}
+
+
+def _version_tuple(version: str) -> tuple[int, int]:
+    major, minor = version.split(".", 1)
+    return int(major), int(minor)
 
 
 def normalize_name(value: str) -> str:
@@ -27,6 +38,11 @@ def load_metadata(path: Path | str | None = None) -> list[dict]:
                 or entry.get("status") != "verified" or not entry.get("source", "").startswith("https://")
                 or not entry.get("retrieved_at") or not entry.get("method")):
             raise ValueError("Invalid or duplicate mission version metadata")
+        min_ver = WORLD_MIN_VERSION.get(entry.get("world", ""))
+        if min_ver and _version_tuple(entry["version"]) < min_ver:
+            raise ValueError(
+                f"Mission {entry['id']} version {entry['version']} predates {entry['world']} release {min_ver[0]}.{min_ver[1]}"
+            )
         seen.add(entry["id"])
     return entries
 

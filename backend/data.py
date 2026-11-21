@@ -11,7 +11,7 @@ import unicodedata
 from bisect import bisect_right
 from collections import defaultdict
 from datetime import datetime, timezone
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -24,7 +24,7 @@ from .version_metadata import load_metadata, normalize_name
 
 
 SCHEMA_VERSION = 1
-IMPORTER_VERSION = 13
+IMPORTER_VERSION = 14
 SCENE_CONTEXTS = Path(__file__).parent / "resources" / "scene_contexts.json"
 DIALOGUE_ORIGINS = Path(__file__).parent / "resources" / "dialogue_origins.json"
 MISSION_TRIGGER_PATTERN = "Config/Level/Mission/*/Mission_*.json"
@@ -218,6 +218,10 @@ class DatasetBuilder:
         self.voice_lines: set[tuple[str, str]] = set()
         self.used_sentences: set[str] = set()
         self.missions: dict[str, dict] = {}
+        self.main_mission_ids: set[str] = set()
+        self.worlds_by_id: dict[str, str] = {}
+        self.script_map_worlds: dict[str, set[str]] = defaultdict(set)
+        self.mission_map_worlds: dict[str, set[str]] = defaultdict(set)
         self.verified_missions: dict[str, dict] = {}
         self.unresolved_sentences = 0
         self.chunk_count = 0
@@ -257,6 +261,7 @@ class DatasetBuilder:
         self.verified_missions = {entry["id"]: entry for entry in load_metadata()}
         chapters = {str(row["ID"]): row for row in read_records(self.root / "ExcelOutput/MissionChapterConfig.json")}
         worlds = {str(row["ID"]): self.resolve(row.get("WorldName")) for row in read_records(self.root / "ExcelOutput/WorldDataConfig.json")}
+        self.worlds_by_id = worlds
         join_items = {
             str(row["TextJoinItemID"]): self.resolve(row.get("TextJoinText"))
             for row in read_records(self.root / "ExcelOutput/TextJoinItem.json")
@@ -270,6 +275,7 @@ class DatasetBuilder:
         }
         for row in read_records(self.root / "ExcelOutput/MainMission.json"):
             mission_id = str(row["MainMissionID"])
+            self.main_mission_ids.add(mission_id)
             chapter = chapters.get(str(row.get("ChapterID")), {})
             details = {
                 "name": self.resolve(row.get("Name")),
@@ -292,7 +298,7 @@ class DatasetBuilder:
                 continue
             speaker_raw = self._resolve_text_joins(self.resolve(row.get("TextmapTalkSentenceName")))
             self.sentences[str(sentence_id)] = {
-                "speaker": normalize_text(speaker_raw) or "开拓者",
+                "speaker": normalize_text(speaker_raw),
                 "text": self._resolve_text_joins(raw_text),
             }
         self.load_script_owners()
@@ -381,6 +387,57 @@ class DatasetBuilder:
                     if len(identity) == 1:
                         # Multiple internal stages of the same named release share one archive entry.
                         self.contextual_script_owners[path] = min(owners, key=int)
+        self.load_script_map_worlds(paths_by_performance)
+
+    def load_script_map_worlds(self, paths_by_performance: dict[tuple[str, str], set[str]]) -> None:
+        """Map performance scripts to world names via MazePlane and level dialogue/group triggers."""
+        planes = {
+            str(row["PlaneID"]): self.worlds_by_id.get(str(row.get("WorldID", "")), "")
+            for row in read_records(self.root / "ExcelOutput/MazePlane.json")
+            if row.get("PlaneID") is not None
+        }
+        if not planes or not paths_by_performance:
+            return
+        root = self.root.resolve()
+        for sub in ("NPCDialogue", "PropDialogue", "GroupGraph"):
+            base = root / "Config/Level" / sub
+            if not base.is_dir():
+                continue
+            for path in sorted(base.rglob("*.json")):
+                if path.name.endswith((".layout.json", ".partial.json")):
+                    continue
+                raw = path.read_text(encoding="utf-8-sig")
+                if "TriggerPerformance" not in raw:
+                    continue
+                rel = path.relative_to(root).as_posix()
+                match = re.search(r"/(?:P(\d+)|F(\d{5})\d{3})/", rel)
+                if not match:
+                    continue
+                world = planes.get(match[1] or match[2], "")
+                if not world:
+                    continue
+                data = json.loads(raw)
+
+                def walk(node: object) -> None:
+                    if isinstance(node, dict):
+                        if str(node.get("$type", "")).rsplit(".", 1)[-1] == "TriggerPerformance":
+                            key = (str(node.get("PerformanceType", "")), str(node.get("PerformanceID", "")))
+                            for script in paths_by_performance.get(key, ()):
+                                self.script_map_worlds[script].add(world)
+                        for value in node.values():
+                            walk(value)
+                    elif isinstance(node, list):
+                        for item in node:
+                            walk(item)
+
+                walk(data)
+
+        for script, script_worlds in self.script_map_worlds.items():
+            owner = VERIFIED_SCRIPT_OWNERS.get(script) or self.performance_owners.get(script)
+            if not owner and "/Mission/" in script:
+                owner = script.split("/Mission/", 1)[1].split("/", 1)[0]
+            if owner:
+                self.mission_map_worlds[owner].update(script_worlds)
 
     def level_group_script_owners(self, paths_by_performance: dict[tuple[str, str], set[str]]) -> dict[str, set[str]]:
         """Trace typed performance calls through an actual NPC/prop in a level group."""
@@ -426,10 +483,28 @@ class DatasetBuilder:
         if details:
             item.update(details)
         entry = self.verified_missions.get(mission_id)
+        map_world = ""
+        if (
+            details is None
+            and mission_id not in self.main_mission_ids
+            and (not entry or entry.get("method") not in {"bwiki-task-infobox", "bwiki-chapter-release", "versioned-gameplay-recording"})
+        ):
+            worlds = self.mission_map_worlds.get(mission_id)
+            if worlds and len(worlds) == 1:
+                map_world = next(iter(worlds))
+                item["world"] = map_world
         fields = ("name", "chapter", "world", "type")
         if entry and all(not item[key] or normalize_name(item[key]) == normalize_name(entry.get(key, "")) for key in fields):
             for key in fields:
                 item[key] = item[key] or entry.get(key, "")
+        elif entry and map_world:
+            if all(not item[key] or normalize_name(item[key]) == normalize_name(entry.get(key, "")) for key in ("name", "chapter", "type")):
+                item["chapter"] = item["chapter"] or entry.get("chapter", "")
+                item["type"] = entry.get("type", "") or item["type"]
+                entry_name = entry.get("name", "")
+                entry_world = entry.get("world", "")
+                if entry_name and entry_world and entry_name.startswith(f"{entry_world} · "):
+                    item["name"] = f"{map_world} · {entry_name.removeprefix(f'{entry_world} · ')}"
         item["name"] = item["name"] or f"任务 {mission_id}"
         self.missions[mission_id] = item
         self.conn.execute("INSERT INTO missions(id,name,chapter,world,type) VALUES(:id,:name,:chapter,:world,:type)", item)
@@ -446,12 +521,15 @@ class DatasetBuilder:
             self.voice_lines.add((mission_id, sentence_id))
         else:
             self.used_sentences.add(sentence_id)
+        speaker = sentence["speaker"]
+        if kind == "option" and not speaker:
+            speaker = "开拓者"
         stable_source = f"{script}:{sequence}:{position}:{sentence_id}:{kind}"
         return {
             "id": hashlib.sha256(stable_source.encode()).hexdigest()[:32],
             "mission_id": mission_id, "script": script, "sequence": sequence,
             "position": position, "sentence_id": sentence_id,
-            "speaker": sentence["speaker"], "text": sentence["text"],
+            "speaker": speaker, "text": sentence["text"],
             "search_text": normalize_text(sentence["text"]), "kind": kind,
             "branch": branch, "trigger": trigger,
         }
@@ -460,7 +538,10 @@ class DatasetBuilder:
         if not lines:
             return
         first = lines[0]
-        text = "\n".join(f"{row['speaker']}：{row['search_text']}" for row in lines)
+        text = "\n".join(
+            f"{row['speaker']}：{row['search_text']}" if row["speaker"] else row["search_text"]
+            for row in lines
+        )
         context = self.mission_search_context(first["mission_id"])
         search_input = f"{context}\n{text}".strip()
         input_text = search_input
@@ -1479,7 +1560,7 @@ def import_data(source: Path, output: Path, progress: Callable[[dict], None] | N
         stats = {
             "missions": conn.execute("SELECT count(*) FROM missions").fetchone()[0],
             "lines": builder.line_count, "chunks": builder.chunk_count,
-            "characters": conn.execute("SELECT count(DISTINCT speaker) FROM lines").fetchone()[0],
+            "characters": conn.execute("SELECT count(DISTINCT speaker) FROM lines WHERE speaker!=''").fetchone()[0],
             "scripts": len(files), "source": source.name, "source_kind": "user-imported snapshot",
             "imported_at": datetime.now(timezone.utc).isoformat(),
             "unresolved_sentences": builder.unresolved_sentences,
@@ -1528,17 +1609,92 @@ def version_sort_key(version: str) -> tuple[int, int]:
     return (0, 0)
 
 
-def get_catalog(path: Path | str) -> dict:
+def get_catalog(path: Path | str, *, full: bool = True) -> dict:
     with open_db(path) as conn:
-        info = {row["key"]: json.loads(row["value"]) for row in conn.execute("SELECT * FROM info")}
-        info.update(story_counts(conn))
-        result = {"stats": info}
-        result["missions"] = [dict(row) for row in conn.execute("SELECT m.* FROM missions m JOIN (SELECT DISTINCT mission_id FROM chunks WHERE script!='unlinked' AND mission_id!='unlinked') story ON story.mission_id=m.id ORDER BY m.id")]
-        for key, column in (("worlds", "world"), ("types", "type")):
-            result[key] = sorted({mission[column] for mission in result["missions"] if mission[column]})
-        result["versions"] = sorted({mission["version"] for mission in result["missions"] if mission["version"]}, key=version_sort_key, reverse=True)
-        result["characters"] = [row[0] for row in conn.execute("SELECT speaker FROM lines WHERE script!='unlinked' AND mission_id!='unlinked' GROUP BY speaker ORDER BY count(*) DESC LIMIT 400")]
+        story_where = "EXISTS(SELECT 1 FROM chunks c WHERE c.mission_id=m.id AND c.script!='unlinked' AND c.mission_id!='unlinked')"
+        worlds = sorted(row[0] for row in conn.execute(f"SELECT DISTINCT m.world FROM missions m WHERE m.world!='' AND {story_where}"))
+        types = sorted(row[0] for row in conn.execute(f"SELECT DISTINCT m.type FROM missions m WHERE m.type!='' AND {story_where}"))
+        versions = sorted(
+            (row[0] for row in conn.execute(f"SELECT DISTINCT m.version FROM missions m WHERE m.version!='' AND {story_where}")),
+            key=version_sort_key,
+            reverse=True,
+        )
+        characters = [
+            row[0] for row in conn.execute(
+                "SELECT speaker FROM lines WHERE script!='unlinked' AND mission_id!='unlinked' AND speaker!='' "
+                "GROUP BY speaker ORDER BY count(*) DESC, speaker ASC LIMIT 400"
+            )
+        ]
+        total_characters = conn.execute(
+            "SELECT count(DISTINCT speaker) FROM lines WHERE script!='unlinked' AND mission_id!='unlinked' AND speaker!=''"
+        ).fetchone()[0]
+        result: dict = {
+            "worlds": worlds,
+            "versions": versions,
+            "types": types,
+            "characters": characters,
+            "total_characters": total_characters,
+        }
+        if full:
+            info = {row["key"]: json.loads(row["value"]) for row in conn.execute("SELECT * FROM info")}
+            info.update(story_counts(conn))
+            result["stats"] = info
+            result["missions"] = [dict(row) for row in conn.execute(f"SELECT m.* FROM missions m WHERE {story_where} ORDER BY m.id")]
         return result
+
+
+@lru_cache(maxsize=4)
+def _speaker_counts(resolved_path: str, mtime_ns: int, size: int) -> tuple[tuple[str, int], ...]:
+    with open_db(resolved_path) as conn:
+        return tuple(
+            (row[0], row[1])
+            for row in conn.execute(
+                "SELECT speaker, count(*) AS cnt FROM lines "
+                "WHERE script!='unlinked' AND mission_id!='unlinked' AND speaker!='' "
+                "GROUP BY speaker ORDER BY cnt DESC, speaker ASC"
+            )
+        )
+
+
+def search_characters(path: Path | str, query: str = "", limit: int = 50) -> list[str]:
+    target = Path(path).resolve()
+    stat = target.stat()
+    counts = _speaker_counts(str(target), stat.st_mtime_ns, stat.st_size)
+    limit = max(1, min(limit, 200))
+    cleaned = normalize_text(query)
+    if not cleaned:
+        return [speaker for speaker, _ in counts[:limit]]
+    from .search import ALIASES
+    direct = cleaned.lower()
+    alias_terms: list[str] = []
+    if canonical := ALIASES.get(cleaned):
+        cand = canonical.lower()
+        if cand != direct and cand not in alias_terms:
+            alias_terms.append(cand)
+    if len(cleaned) >= 2:
+        for alias, target_name in ALIASES.items():
+            if cleaned in alias:
+                cand = target_name.lower()
+                if cand != direct and cand not in alias_terms:
+                    alias_terms.append(cand)
+    matches: list[tuple[int, int, str]] = []
+    for speaker, cnt in counts:
+        lower = speaker.lower()
+        tier: int | None = None
+        if lower == direct:
+            tier = 0
+        elif lower.startswith(direct):
+            tier = 1
+        elif direct in lower:
+            tier = 2
+        elif any(lower == term for term in alias_terms):
+            tier = 3
+        elif any(lower.startswith(term) or term in lower for term in alias_terms):
+            tier = 4
+        if tier is not None:
+            matches.append((tier, -cnt, speaker))
+    matches.sort()
+    return [speaker for _, _, speaker in matches[:limit]]
 
 
 def _script_trailing_num(script: str) -> int | None:

@@ -178,7 +178,7 @@ def export(database: Path, target: Path, snapshot: str) -> dict:
                     if line["script"] != chunk["script"]:
                         raise ValueError(f"Chunk {chunk['id']} spans more than one script")
                     packed.append(item)
-                expected = "\n".join(f"{line['speaker']}：{line['search_text']}" for line in chunk_lines)
+                expected = "\n".join(f"{line['speaker']}：{line['search_text']}" if line["speaker"] else line["search_text"] for line in chunk_lines)
                 doc_length = len(re.findall(r"[a-z0-9]+|[\u3400-\u9fff]+", chunk["terms"]))
                 token_count += doc_length
                 entry = [chunk["id"] - previous_chunk, script_index, nodes.add(chunk["branch"]), doc_length, packed]

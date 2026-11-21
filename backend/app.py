@@ -241,7 +241,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                 return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)
             route = request.url.path
             public_routes = {"/api/v1/status", "/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/bootstrap", "/api/v1/auth/logout"}
-            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/search", "/api/v1/feedback"} or route.startswith("/api/v1/missions/"))
+            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/characters", "/api/v1/search", "/api/v1/feedback"} or route.startswith("/api/v1/missions/"))
             if route not in public_routes and not public_query:
                 current_session = session(request)
                 if not current_session:
@@ -346,9 +346,17 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
     def catalog(user=Depends(reader)):
         path, _ = runtime.active_path()
         if not path:
-            return {"worlds": [], "versions": [], "types": [], "characters": []}
+            return {"worlds": [], "versions": [], "types": [], "characters": [], "total_characters": 0}
         from .data import get_catalog
-        return get_catalog(path)
+        return get_catalog(path, full=False)
+
+    @app.get("/api/v1/characters")
+    def characters(q: str = "", limit: int = 50, user=Depends(reader)):
+        path, _ = runtime.active_path()
+        if not path:
+            return {"characters": []}
+        from .data import search_characters
+        return {"characters": search_characters(path, q, limit=limit)}
 
     @app.post("/api/v1/search")
     def search(payload: SearchRequest, request: Request, user=Depends(reader)):
@@ -373,7 +381,8 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
             if payload.query_vector is not None:
                 runtime.validate_query_vector(path, payload.query_vector)
             from .data import performance_script_id, version_sort_key
-            from .search import lexical_search
+            from .search import lexical_search, matching_missions
+            matched_missions = matching_missions(path, query, payload.filters, limit=5) if (query and payload.offset == 0) else []
             lexical = lexical_search(path, query, payload.filters, limit=500, allow_fuzzy=payload.mode == "fuzzy")
             semantic = []
             notice = ""
@@ -441,7 +450,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                         continue
                     seen_dedup.add(dedup_key)
                 ordered.append(item)
-            return {"results": ordered[payload.offset:payload.offset + payload.limit], "total": len(ordered), "truncated": len(lexical) >= 500 or len(semantic) >= 500, "search_mode": search_mode, "notice": notice, "elapsed_ms": round((time.monotonic() - start) * 1000), "snapshot": snapshot}
+            return {"results": ordered[payload.offset:payload.offset + payload.limit], "matched_missions": matched_missions, "total": len(ordered), "truncated": len(lexical) >= 500 or len(semantic) >= 500, "search_mode": search_mode, "notice": notice, "elapsed_ms": round((time.monotonic() - start) * 1000), "snapshot": snapshot}
         finally:
             search_slots.release()
 

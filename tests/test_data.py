@@ -7,9 +7,9 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.data import VERIFIED_SCENES, _collapse_mirrored_scripts, get_catalog, get_mission, import_data, normalize_text, open_db, search_tokens
+from backend.data import VERIFIED_SCENES, _collapse_mirrored_scripts, get_catalog, get_mission, import_data, normalize_text, open_db, search_characters, search_tokens
 from backend.data_maintenance import update_script_order
-from backend.search import _extract_content_terms, _score_fields, get_chunks, lexical_search, semantic_context_bonus
+from backend.search import _extract_content_terms, _score_fields, get_chunks, lexical_search, matching_missions, semantic_context_bonus
 
 
 BASE_TEXTS = {
@@ -1011,6 +1011,145 @@ class DataTests(unittest.TestCase):
         self.assertTrue(import_report["audit"]["ok"])
         self.assertEqual([l["script"] for l in get_mission(base_db, "1054706")["lines"]], [s01, s05, s09, s12])
         self.assertEqual(get_mission(clone_db, "1054706")["lines"], get_mission(base_db, "1054706")["lines"])
+
+    def test_empty_speaker_narration_and_catalog_exclusion(self):
+        texts = json.loads((self.root / "TextMap/TextMapCHS.json").read_text(encoding="utf-8"))
+        texts.update({
+            "7001": "光栅拦住了你的去路",
+            "7002": "我也试试",
+            "7003": "强行推开",
+            "7999": "{NICKNAME}",
+        })
+        self.write("TextMap/TextMapCHS.json", texts)
+        sentences = json.loads((self.root / "ExcelOutput/TalkSentenceConfig.json").read_text(encoding="utf-8"))
+        sentences.extend([
+            {"TalkSentenceID": 7001, "TalkSentenceText": {"Hash": 7001}, "TextmapTalkSentenceName": {"Hash": 0}},
+            {"TalkSentenceID": 7002, "TalkSentenceText": {"Hash": 7002}, "TextmapTalkSentenceName": {"Hash": 7999}},
+            {"TalkSentenceID": 7003, "TalkSentenceText": {"Hash": 7003}, "TextmapTalkSentenceName": None},
+        ])
+        self.write("ExcelOutput/TalkSentenceConfig.json", sentences)
+        self.write("Config/Level/Mission/1/Act/Act1.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.PlayAndWaitSimpleTalk", "SimpleTalkList": [{"TalkSentenceID": 7001}, {"TalkSentenceID": 7002}]},
+            {"$type": "RPG.GameCore.PlayOptionTalk", "OptionList": [{"TalkSentenceID": 7003, "TriggerCustomString": "push"}]},
+        ]}]})
+
+        db = Path(self.temp.name) / "narration.db"
+        import_data(self.root, db)
+        lines = {line["sentence_id"]: line for line in get_mission(db, "1")["lines"]}
+        self.assertEqual(lines["7001"]["speaker"], "")
+        self.assertEqual(lines["7002"]["speaker"], "开拓者")
+        self.assertEqual(lines["7003"]["speaker"], "开拓者")
+        with open_db(db) as conn:
+            chunk_text = conn.execute("SELECT text FROM chunks WHERE id=?", (lines["7001"]["chunk_id"],)).fetchone()[0]
+        self.assertIn("光栅拦住了你的去路\n开拓者：我也试试", chunk_text)
+        self.assertNotIn("：光栅拦住了你的去路", chunk_text)
+        cat_full = get_catalog(db)
+        cat_slim = get_catalog(db, full=False)
+        self.assertNotIn("", cat_full["characters"])
+        self.assertEqual(cat_slim["total_characters"], 1)
+        self.assertEqual(search_characters(db), ["开拓者"])
+
+    def test_map_triggered_non_main_mission_world(self):
+        texts = json.loads((self.root / "TextMap/TextMapCHS.json").read_text(encoding="utf-8"))
+        texts.update({"8100": "星穹列车", "8001": "小助理的测试台词"})
+        self.write("TextMap/TextMapCHS.json", texts)
+        worlds = json.loads((self.root / "ExcelOutput/WorldDataConfig.json").read_text(encoding="utf-8"))
+        worlds.append({"ID": 100, "WorldName": {"Hash": 8100}})
+        self.write("ExcelOutput/WorldDataConfig.json", worlds)
+        self.write("ExcelOutput/MazePlane.json", [{"PlaneID": 10000, "WorldID": 100}])
+        sentences = json.loads((self.root / "ExcelOutput/TalkSentenceConfig.json").read_text(encoding="utf-8"))
+        sentences.append({"TalkSentenceID": 8001, "TalkSentenceText": {"Hash": 8001}, "TextmapTalkSentenceName": {"Hash": 4}})
+        self.write("ExcelOutput/TalkSentenceConfig.json", sentences)
+        act = "Config/Level/Mission/5040480/Act/Act504048001.json"
+        self.write("ExcelOutput/PerformanceE.json", [{"PerformanceID": 504048001, "PerformancePath": act}])
+        self.simple_perf(act, [8001])
+        self.write(
+            "Config/Level/NPCDialogue/P10000/F10000003_G175/DialogueMain_F10000003_G175_N400001.json",
+            {"OnStartSequece": [{"TaskList": [{"$type": "RPG.GameCore.TriggerPerformance", "PerformanceType": "E", "PerformanceID": 504048001}]}]},
+        )
+
+        db = Path(self.temp.name) / "map-world.db"
+        import_data(self.root, db)
+        self.assertEqual(get_mission(db, "5040480")["mission"]["world"], "星穹列车")
+
+    def test_slim_catalog_and_character_search(self):
+        texts = json.loads((self.root / "TextMap/TextMapCHS.json").read_text(encoding="utf-8"))
+        sentences = json.loads((self.root / "ExcelOutput/TalkSentenceConfig.json").read_text(encoding="utf-8"))
+        talk_items: list[dict] = []
+        base_id = 30000
+        named_speakers = [("瓦尔特", 2), ("三月七", 2), ("小机器人", 2), ("尼古莱", 1)]
+        for i in range(401):
+            named_speakers.append((f"路人甲{i:03d}", 2))
+        for idx, (spk, repeat) in enumerate(named_speakers):
+            spk_hash = base_id + idx * 10
+            texts[str(spk_hash)] = spk
+            for rep in range(repeat):
+                sid = base_id + idx * 10 + 1 + rep
+                texts[str(sid)] = f"{spk}台词{rep}"
+                sentences.append({"TalkSentenceID": sid, "TalkSentenceText": {"Hash": sid}, "TextmapTalkSentenceName": {"Hash": spk_hash}})
+                talk_items.append({"TalkSentenceID": sid})
+        self.write("TextMap/TextMapCHS.json", texts)
+        self.write("ExcelOutput/TalkSentenceConfig.json", sentences)
+        self.write("Config/Level/Mission/1/Act/Act1.json", {"OnStartSequece": [{"TaskList": [
+            {"$type": "RPG.GameCore.PlayAndWaitSimpleTalk", "SimpleTalkList": talk_items},
+        ]}]})
+
+        db = Path(self.temp.name) / "characters.db"
+        import_data(self.root, db)
+        slim = get_catalog(db, full=False)
+        self.assertNotIn("missions", slim)
+        self.assertNotIn("stats", slim)
+        self.assertEqual(len(slim["characters"]), 400)
+        self.assertEqual(slim["total_characters"], 405)
+        self.assertNotIn("尼古莱", slim["characters"])
+        full = get_catalog(db)
+        self.assertIn("missions", full)
+        self.assertIn("stats", full)
+        self.assertEqual(search_characters(db, "尼古莱"), ["尼古莱"])
+        self.assertEqual(search_characters(db, "老杨"), ["瓦尔特"])
+        xiao = search_characters(db, "小")
+        self.assertEqual(xiao[0], "小机器人")
+
+    def test_matching_missions_exact_and_filters(self):
+        texts = json.loads((self.root / "TextMap/TextMapCHS.json").read_text(encoding="utf-8"))
+        texts.update({
+            "9001": "失控",
+            "9002": "星际·和平！公司",
+            "9003": "雅利洛-Ⅵ",
+            "9004": "匹诺康尼",
+            "9005": "别让它失控了。",
+            "9006": "任务二台词",
+            "9007": "公司台词",
+        })
+        self.write("TextMap/TextMapCHS.json", texts)
+        worlds = json.loads((self.root / "ExcelOutput/WorldDataConfig.json").read_text(encoding="utf-8"))
+        worlds.extend([{"ID": 10, "WorldName": {"Hash": 9003}}, {"ID": 20, "WorldName": {"Hash": 9004}}])
+        self.write("ExcelOutput/WorldDataConfig.json", worlds)
+        missions = json.loads((self.root / "ExcelOutput/MainMission.json").read_text(encoding="utf-8"))
+        missions.extend([
+            {"MainMissionID": 2011101, "Name": {"Hash": 9001}, "WorldID": 10, "Type": "Main"},
+            {"MainMissionID": 2099999, "Name": {"Hash": 9002}, "WorldID": 20, "Type": "Branch"},
+        ])
+        self.write("ExcelOutput/MainMission.json", missions)
+        sentences = json.loads((self.root / "ExcelOutput/TalkSentenceConfig.json").read_text(encoding="utf-8"))
+        sentences.extend([
+            {"TalkSentenceID": 9005, "TalkSentenceText": {"Hash": 9005}, "TextmapTalkSentenceName": {"Hash": 4}},
+            {"TalkSentenceID": 9006, "TalkSentenceText": {"Hash": 9006}, "TextmapTalkSentenceName": {"Hash": 4}},
+            {"TalkSentenceID": 9007, "TalkSentenceText": {"Hash": 9007}, "TextmapTalkSentenceName": {"Hash": 4}},
+        ])
+        self.write("ExcelOutput/TalkSentenceConfig.json", sentences)
+        self.simple_perf("Config/Level/Mission/1/Act/Act1.json", [9005])
+        self.simple_perf("Config/Level/Mission/2011101/Act/Act201110101.json", [9006])
+        self.simple_perf("Config/Level/Mission/2099999/Act/Act209999901.json", [9007])
+
+        db = Path(self.temp.name) / "matching.db"
+        import_data(self.root, db)
+        self.assertEqual(matching_missions(db, "失控")[0]["mission_id"], "2011101")
+        self.assertEqual(matching_missions(db, "《失控》")[0]["mission_id"], "2011101")
+        self.assertEqual(matching_missions(db, "星际和平公司")[0]["mission_id"], "2099999")
+        self.assertEqual(matching_missions(db, "失控", filters={"world": "匹诺康尼"}), [])
+        self.assertEqual(matching_missions(db, "失控", filters={"world": "雅利洛-Ⅵ"})[0]["mission_id"], "2011101")
+        self.assertEqual(matching_missions(db, "这是一句无关的台词"), [])
 
 
 if __name__ == "__main__":

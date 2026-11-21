@@ -173,7 +173,7 @@ def main():
         for entry in previous:
             identity = identities.get(entry["id"])
             if identity and all(identity[k] == entry[k] for k in ("name", "chapter", "world", "type")):
-                if entry["method"] == "versioned-gameplay-recording":
+                if entry["method"] in {"versioned-gameplay-recording", "upstream-snapshot-first-appearance", "official-release-notes"}:
                     current[entry["id"]] = entry
                 else:
                     current.setdefault(entry["id"], entry)

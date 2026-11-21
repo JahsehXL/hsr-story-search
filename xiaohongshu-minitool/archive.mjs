@@ -183,7 +183,7 @@ export function createArchive(manifest, loadShard) {
   }
 
   function sourceOf(row, normalized) {
-    return row[5] === undefined ? row[4].map((line, i) => speakers[line[3]] + '：'
+    return row[5] === undefined ? row[4].map((line, i) => (speakers[line[3]] ? speakers[line[3]] + '：' : '')
       + (normalized ? normalized[i] : searchTextOf(line))).join('\n') : row[5];
   }
 

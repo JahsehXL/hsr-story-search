@@ -68,7 +68,18 @@ export interface Status {
 
 export interface Filters { world: string; version: string; type: string; character: string }
 export type SearchMode = 'text' | 'hybrid' | 'fuzzy';
-export interface Catalog { worlds: string[]; versions: string[]; types: string[]; characters: string[] }
+export interface Catalog { worlds: string[]; versions: string[]; types: string[]; characters: string[]; total_characters?: number }
+export interface MatchedMission {
+  mission_id: string;
+  mission_name: string;
+  chapter: string;
+  world: string;
+  type?: string;
+  version: string;
+  version_status: string;
+  line_count?: number;
+  exact?: boolean;
+}
 export interface DialogueOrigin {
   title: string;
   origins: { kind: 'trigger' | 'shared_config' | 'workflow'; name: string; task_version?: string }[];
@@ -96,6 +107,7 @@ export interface Result {
 }
 export interface SearchResponse {
   results: Result[];
+  matched_missions?: MatchedMission[];
   total: number;
   truncated?: boolean;
   search_mode: string;

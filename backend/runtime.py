@@ -274,7 +274,7 @@ class Runtime:
             return {"ready": False, "stats": {}, "snapshot": ""}
         with connect(path) as connection:
             stats = {name: connection.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in ("missions", "lines", "chunks")}
-            stats["characters"] = connection.execute("SELECT COUNT(DISTINCT speaker) FROM lines").fetchone()[0]
+            stats["characters"] = connection.execute("SELECT COUNT(DISTINCT speaker) FROM lines WHERE speaker!=''").fetchone()[0]
             stats["narrative_lines"] = connection.execute("SELECT COUNT(*) FROM lines WHERE script!='unlinked' AND mission_id!='unlinked'").fetchone()[0]
             stats["narrative_chunks"] = connection.execute("SELECT COUNT(*) FROM chunks WHERE script!='unlinked' AND mission_id!='unlinked'").fetchone()[0]
         stats["game_version"] = read_info(path, "source_provenance", {}).get("game_version", "")

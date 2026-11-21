@@ -4,7 +4,8 @@ const gameTag = /<\/?(?:color|size|b|i|it|u|s|align|alpha|voffset|font|material|
 const dynamicText = /\{TEXTJOIN#\d+\}/g;
 
 export function speakerName(value: string) {
-  if (!value || value.includes('{NICKNAME}') || value === 'PlayerName') return '开拓者';
+  if (!value) return '旁白';
+  if (value.includes('{NICKNAME}') || value === 'PlayerName') return '开拓者';
   return value.replace(dynamicText, '〔动态称呼〕');
 }
 export function missionTypeClass(value: string) {

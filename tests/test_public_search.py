@@ -38,12 +38,19 @@ def test_public_readonly_private_and_local_access_modes(public_app, tmp_path, mo
         assert (status["public_readonly"], status["authenticated"], status["admin"], status["jobs"]) == (True, True, False, [])
         assert (status["embedding"]["index_ready"], status["embedding"]["server_key_ready"], status["embedding"]["ready"]) == (True, False, False)
         assert client.get("/api/v1/catalog").status_code == 200
+        slim = client.get("/api/v1/catalog").json()
+        assert "missions" not in slim and "stats" not in slim
+        assert "total_characters" in slim and slim["worlds"] == ["空间站"]
+        assert client.get("/api/v1/characters", params={"q": "三月"}).json()["characters"] == ["三月七"]
         assert client.get("/api/v1/missions/1").status_code == 200
         assert client.get("/api/v1/missions/missing").status_code == 404
         unanchored = client.get("/api/v1/missions/1", params={"line_id": "old-line"})
         assert unanchored.status_code == 200 and unanchored.json()["lines"]
         assert unanchored.json()["anchor_missing"] and unanchored.json()["anchor_line_id"] is None
-        assert client.post("/api/v1/search", json={"query": "列车", "mode": "text"}).status_code == 200
+        search_res = client.post("/api/v1/search", json={"query": "列车", "mode": "text"})
+        assert search_res.status_code == 200 and search_res.json()["matched_missions"] == []
+        title_res = client.post("/api/v1/search", json={"query": "任务", "mode": "text"})
+        assert title_res.status_code == 200 and title_res.json()["matched_missions"][0]["mission_id"] == "1"
         for route in ("settings", "jobs", "diagnostics", "package"):
             assert client.get("/api/v1/admin/" + route).status_code == 401
         assert client.post("/api/v1/admin/embedding/test", json={}).status_code == 401
@@ -54,16 +61,19 @@ def test_public_readonly_private_and_local_access_modes(public_app, tmp_path, mo
     with TestClient(create_app(tmp_path / "private", mode="server"), base_url="https://story.example") as client:
         assert client.get("/api/v1/status").json()["authenticated"] is False
         assert client.get("/api/v1/catalog").status_code == 401
+        assert client.get("/api/v1/characters").status_code == 401
         assert client.get("/api/v1/missions/1").status_code == 401
         assert client.post("/api/v1/search", json={"query": "列车"}).status_code == 401
         assert client.post("/api/v1/auth/login", json={"code": "private-reader-code"}).status_code == 200
         assert client.get("/api/v1/catalog").status_code == 200
+        assert client.get("/api/v1/characters").status_code == 200
         assert client.get("/api/v1/admin/settings").status_code == 403
 
     monkeypatch.delenv("HSR_ACCESS_CODE", raising=False)
     with TestClient(create_app(tmp_path / "local", mode="local", bootstrap_token="test-bootstrap"), base_url="http://127.0.0.1") as client:
         assert client.get("/api/v1/status").json()["authenticated"] is False
         assert client.get("/api/v1/catalog").status_code == 401
+        assert client.get("/api/v1/characters").status_code == 401
         assert client.post("/api/v1/auth/bootstrap", json={"token": "test-bootstrap"}).status_code == 200
         assert client.get("/api/v1/admin/settings").status_code == 200
         assert client.post("/api/v1/auth/bootstrap", json={"token": "test-bootstrap"}).status_code == 401

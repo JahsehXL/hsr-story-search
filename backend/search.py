@@ -10,6 +10,7 @@ from rapidfuzz.distance import LCSseq
 from rapidfuzz.fuzz import partial_ratio
 
 from .data import dialogue_origin, normalize_text, open_db, search_tokens, version_sort_key
+from .version_metadata import normalize_name
 
 
 ALIASES = {
@@ -444,6 +445,64 @@ def _relevance_tier(match_type: str, matched_field: str, score: float) -> int:
     if match_type in {"exact", "keyword"}:
         return 2
     return 1
+
+
+def _normalize_mission_query(value: str) -> tuple[str, str]:
+    text = normalize_text(value).strip("《》「」『』\"'“”‘’ ")
+    norm = normalize_name(text).lower()
+    compact = re.sub(r"[\s·•・,，:：!！?？]+", "", norm)
+    return norm, compact
+
+
+def matching_missions(path: Path | str, query: str, filters: dict | None = None, limit: int = 5) -> list[dict]:
+    norm_q, compact_q = _normalize_mission_query(query)
+    if not norm_q:
+        return []
+    filters = filters or {}
+    condition, filter_args = filter_sql(filters, alias="m", chunk_alias="c")
+    type_priority = {"开拓任务": 0, "Gap": 1, "开拓续闻": 1, "同行任务": 2, "支线任务": 3}
+    with open_db(path) as conn:
+        rows = conn.execute(
+            f"""SELECT DISTINCT m.id, m.name, m.chapter, m.world, m.type, m.version, m.version_status
+                FROM missions m JOIN chunks c ON c.mission_id=m.id
+                WHERE 1=1 {condition}""",
+            filter_args,
+        ).fetchall()
+        matched: list[dict] = []
+        for row in rows:
+            name = row["name"] or ""
+            norm_name = normalize_name(name).lower()
+            compact_name = re.sub(r"[\s·•・,，:：!！?？]+", "", norm_name)
+            if norm_name == norm_q or (compact_q and compact_name == compact_q):
+                matched.append(dict(row))
+        if not matched:
+            return []
+        matched.sort(
+            key=lambda m: (
+                -version_sort_key(m.get("version", ""))[0],
+                -version_sort_key(m.get("version", ""))[1],
+                type_priority.get(m.get("type", ""), 4),
+                m["id"],
+            )
+        )
+        results: list[dict] = []
+        for m in matched[:max(1, min(limit, 20))]:
+            line_count = conn.execute(
+                "SELECT count(*) FROM lines WHERE mission_id=? AND script!='unlinked'",
+                (m["id"],),
+            ).fetchone()[0]
+            results.append({
+                "mission_id": m["id"],
+                "mission_name": m["name"],
+                "chapter": m["chapter"],
+                "world": m["world"],
+                "type": m["type"],
+                "version": m["version"],
+                "version_status": m["version_status"],
+                "line_count": line_count,
+                "exact": True,
+            })
+        return results
 
 
 def lexical_search(path: Path | str, query: str, filters: dict | None = None, limit: int = 100,

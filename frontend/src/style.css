@@ -190,6 +190,12 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
 .results-heading small { white-space: nowrap; font-size: inherit; }
 .results-scroll { overflow: auto; flex: 1; min-height: 0; scrollbar-gutter: stable; }
 .result-list { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.matched-missions { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--accent-border); border-radius: 8px; background: var(--accent-soft); margin-bottom: 4px; }
+.matched-missions-title { font-size: 11px; font-weight: 600; color: var(--accent); letter-spacing: 0.3px; padding: 0 4px; }
+.mission-shortcut-card { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--accent-border); border-radius: 7px; background: var(--bg); transition: background 140ms, border-color 140ms; }
+.mission-shortcut-card:hover { background: var(--surface-hover); border-color: var(--accent); }
+.mission-shortcut-card.selected { background: var(--surface-raised); border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.mission-shortcut-card h3 { font-size: 14px; line-height: 1.45; color: var(--text-strong); font-weight: 600; margin: 6px 0 4px; }
 .result-card { display: block; width: 100%; text-align: left; padding: 12px 14px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg); transition: background 140ms, border-color 140ms, transform 140ms; }
 .result-card:hover { background: var(--surface-hover); border-color: var(--line); }
 .result-card.selected { background: var(--surface-raised); border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
@@ -300,6 +306,8 @@ input::placeholder, textarea::placeholder { color: var(--subtle); opacity: 1; }
   user-select: none;
 }
 .dialogue-line.is-player .speaker { color: var(--accent); }
+.dialogue-line.is-narration .speaker { color: var(--subtle); font-weight: 500; font-size: 12px; }
+.dialogue-line.is-narration .dialogue-body p { color: var(--muted); }
 .dialogue-body { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
 .dialogue-body p { font-size: 15.5px; line-height: 1.8; color: var(--text); white-space: pre-wrap; margin: 0; flex: 1; }
 .dialogue-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }

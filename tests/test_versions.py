@@ -66,6 +66,10 @@ def test_metadata_validation_and_bundled_catalog(tmp_path):
     for entry in entries:
         if entry["method"] == "versioned-gameplay-recording":
             assert entry["source"].startswith("https://www.bilibili.com/video/")
+        elif entry["method"] == "upstream-snapshot-first-appearance":
+            assert entry["source"].startswith("https://github.com/DimbreathBot/TurnBasedGameData/")
+        elif entry["method"] == "official-release-notes":
+            assert entry["source"].startswith(("https://www.hoyoverse.com/", "https://www.hoyolab.com/"))
         else:
             assert entry["method"].startswith("bwiki-")
             assert entry["source"].startswith("https://wiki.biligame.com/sr/")
@@ -73,6 +77,14 @@ def test_metadata_validation_and_bundled_catalog(tmp_path):
     target.write_text(json.dumps({"schema_version": 1, "missions": [entries[0], entries[0]]}), encoding="utf-8")
     with pytest.raises(ValueError):
         load_metadata(target)
+
+    bad_world = tmp_path / "bad-world.json"
+    bad_world.write_text(
+        json.dumps({"schema_version": 1, "missions": [{**mission("999", world="二相乐园", version="1.0"), "source": "https://wiki.biligame.com/sr/test", "retrieved_at": "2026-11-21", "method": "bwiki-series-infobox", "status": "verified"}]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="predates"):
+        load_metadata(bad_world)
 
 
 def test_name_normalization_keeps_meaningful_punctuation():
