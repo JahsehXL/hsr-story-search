@@ -106,6 +106,17 @@ class UploadStart(BaseModel):
     size: int = Field(ge=1, le=4 * 1024**3)
 
 
+class AnnouncementUpdate(BaseModel):
+    title: str = Field(default="站点公告与更新日志", max_length=120)
+    note_title: str = Field(default="写在前面", max_length=80)
+    note_body: str = Field(default="", max_length=8000)
+    changelog_title: str = Field(default="最近更新", max_length=80)
+    changelog_body: str = Field(default="", max_length=40000)
+    auto_popup: bool = True
+    snooze_days: int = Field(default=7, ge=1, le=30)
+    bump_version: bool = True
+
+
 def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstrap_token: str | None = None) -> FastAPI:
     root = Path(data_dir or os.environ.get("HSR_DATA_DIR", "data"))
     if mode not in {"local", "server"}:
@@ -241,7 +252,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                 return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)
             route = request.url.path
             public_routes = {"/api/v1/status", "/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/bootstrap", "/api/v1/auth/logout"}
-            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/characters", "/api/v1/search", "/api/v1/feedback"} or route.startswith("/api/v1/missions/"))
+            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/characters", "/api/v1/search", "/api/v1/feedback", "/api/v1/announcement"} or route.startswith("/api/v1/missions/"))
             if route not in public_routes and not public_query:
                 current_session = session(request)
                 if not current_session:
@@ -537,6 +548,18 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
     def get_feedback_attachment(feedback_id: str, attachment_id: str, user=Depends(administrator)):
         path, mime_type, filename = runtime.feedback.get_attachment(feedback_id, attachment_id)
         return FileResponse(path, media_type=mime_type, filename=filename, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/api/v1/announcement")
+    def get_announcement(user=Depends(reader)):
+        return runtime.announcement.get()
+
+    @app.get("/api/v1/admin/announcement")
+    def get_admin_announcement(user=Depends(administrator)):
+        return runtime.announcement.get()
+
+    @app.put("/api/v1/admin/announcement")
+    def save_admin_announcement(payload: AnnouncementUpdate, user=Depends(administrator)):
+        return runtime.announcement.save(payload.model_dump())
 
     @app.get("/api/v1/admin/settings")
     def settings(user=Depends(administrator)):

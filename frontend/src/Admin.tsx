@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiUrl, downloadJson, post, request } from './api';
+import { DEFAULT_ANNOUNCEMENT, normalizeAnnouncement } from './announcement';
+import type { AnnouncementData } from './announcement';
 import { displayText, errorText, Empty, speakerName } from './presentation';
 import type { FeedbackItem, FeedbackListResponse, FeedbackStorage, Job, Settings, Status } from './types';
 
@@ -30,8 +32,13 @@ const labels: Record<string, string> = {
 
 function formatNumber(value: number | string | undefined) { return typeof value === 'number' ? value.toLocaleString('zh-CN') : value || '—'; }
 
-export default function Admin({ status, onRefresh, onToast }: { status: Status; onRefresh: () => Promise<Status>; onToast: (message: string) => void }) {
-  const [tab, setTab] = useState<'api' | 'data' | 'jobs' | 'feedback'>('api');
+export default function Admin({ status, onRefresh, onToast, onAnnouncementSaved }: {
+  status: Status;
+  onRefresh: () => Promise<Status>;
+  onToast: (message: string) => void;
+  onAnnouncementSaved?: (announcement: AnnouncementData) => void;
+}) {
+  const [tab, setTab] = useState<'api' | 'data' | 'jobs' | 'feedback' | 'announcement'>('api');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [apiKey, setApiKey] = useState('');
   const [extra, setExtra] = useState('{}');
@@ -48,6 +55,13 @@ export default function Admin({ status, onRefresh, onToast }: { status: Status; 
   const [feedbackItems, setFeedbackItems] = useState<FeedbackItem[]>([]);
   const [feedbackStatusFilter, setFeedbackStatusFilter] = useState('all');
   const [feedbackCategoryFilter, setFeedbackCategoryFilter] = useState('all');
+  const [announcementForm, setAnnouncementForm] = useState<AnnouncementData>(DEFAULT_ANNOUNCEMENT);
+  const [announcementBump, setAnnouncementBump] = useState(true);
+
+  const loadAnnouncement = useCallback(async () => {
+    const data = await request<AnnouncementData>('admin/announcement');
+    setAnnouncementForm(normalizeAnnouncement(data));
+  }, []);
 
   const loadFeedback = useCallback(async (st = feedbackStatusFilter, cat = feedbackCategoryFilter) => {
     const q = new URLSearchParams({ status: st, category: cat, limit: '100' });
@@ -67,8 +81,10 @@ export default function Admin({ status, onRefresh, onToast }: { status: Status; 
   useEffect(() => {
     if (tab === 'feedback') {
       void loadFeedback().catch(err => setError(errorText(err)));
+    } else if (tab === 'announcement') {
+      void loadAnnouncement().catch(err => setError(errorText(err)));
     }
-  }, [tab, loadFeedback]);
+  }, [tab, loadFeedback, loadAnnouncement]);
 
   async function action(name: string, run: () => Promise<unknown>) {
     setBusy(name); setError('');
@@ -112,7 +128,7 @@ export default function Admin({ status, onRefresh, onToast }: { status: Status; 
   function updateEmbedding(key: string, value: unknown) { setSettings(old => old ? { ...old, embedding: { ...old.embedding, [key]: value } } : old); }
   const running = jobs.some(job => ['queued', 'running', 'paused'].includes(job.status));
   const pendingFeedback = feedbackStorage?.pending_count ?? status.feedback?.pending_count ?? 0;
-  return <div className="admin-shell"><nav className="admin-tabs" aria-label="管理分类">{([['api', '搜索 API'], ['data', '数据与更新'], ['jobs', '后台任务'], ['feedback', '用户反馈']] as const).map(([id, label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'jobs' && running && <span className="status-dot" />}{id === 'feedback' && pendingFeedback > 0 && <span className="status-dot" />}</button>)}</nav>
+  return <div className="admin-shell"><nav className="admin-tabs" aria-label="管理分类">{([['api', '搜索 API'], ['data', '数据与更新'], ['jobs', '后台任务'], ['feedback', '用户反馈'], ['announcement', '站点公告']] as const).map(([id, label]) => <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}{id === 'jobs' && running && <span className="status-dot" />}{id === 'feedback' && pendingFeedback > 0 && <span className="status-dot" />}</button>)}</nav>
     <div className="admin-content">{error && <div className="inline-alert" role="alert">{error}</div>}
       {tab === 'api' && (settings ? <>
         <div className="section-heading"><div><h3>嵌入模型接口</h3><p>用于理解情节描述，剧情索引与查询应使用配套模型。</p></div><span className={`state-pill ${status.embedding.ready && status.embedding.compatible ? 'ready' : ''}`}>{status.embedding.ready && status.embedding.compatible ? '索引可用' : '待建立索引'}</span></div>
@@ -239,6 +255,50 @@ export default function Admin({ status, onRefresh, onToast }: { status: Status; 
           </article>)}
         </div> : <Empty title="暂无反馈记录"><p>用户提交的反馈与截图会显示在这里。</p></Empty>}
       </>}
+      {tab === 'announcement' && <form onSubmit={e => {
+        e.preventDefault();
+        void action('save-announcement', async () => {
+          const saved = normalizeAnnouncement(await request<AnnouncementData>('admin/announcement', {
+            method: 'PUT',
+            body: JSON.stringify({
+              title: announcementForm.title,
+              note_title: announcementForm.note_title,
+              note_body: announcementForm.note_body,
+              changelog_title: announcementForm.changelog_title,
+              changelog_body: announcementForm.changelog_body,
+              auto_popup: announcementForm.auto_popup,
+              snooze_days: announcementForm.snooze_days,
+              bump_version: announcementBump,
+            }),
+          }));
+          setAnnouncementForm(saved);
+          onAnnouncementSaved?.(saved);
+          onToast('公告已覆盖保存');
+        });
+      }}>
+        <div className="section-heading">
+          <div>
+            <h3>站点公告与更新日志</h3>
+            <p>直接编辑并覆盖网页版公告内容；更新日志在前端以固定高度滑动窗口展示（当前版本 {announcementForm.id}）。</p>
+          </div>
+          <button type="button" className="secondary" disabled={!!busy} onClick={() => void action('reload-announcement', loadAnnouncement)}>重新读取</button>
+        </div>
+        <div className="form-grid">
+          <label className="field"><span>公告标题</span><input required maxLength={120} value={announcementForm.title} onChange={e => setAnnouncementForm(old => ({ ...old, title: e.target.value }))} /></label>
+          <label className="field"><span>寄语小标题</span><input maxLength={80} value={announcementForm.note_title} onChange={e => setAnnouncementForm(old => ({ ...old, note_title: e.target.value }))} /></label>
+          <label className="field"><span>更新日志小标题</span><input maxLength={80} value={announcementForm.changelog_title} onChange={e => setAnnouncementForm(old => ({ ...old, changelog_title: e.target.value }))} /></label>
+          <label className="field"><span>静默天数（1-30）</span><input type="number" min={1} max={30} required value={announcementForm.snooze_days} onChange={e => setAnnouncementForm(old => ({ ...old, snooze_days: Number(e.target.value || 7) }))} /></label>
+        </div>
+        <label className="field"><span>站长寄语正文（支持空行分段）</span><textarea rows={5} maxLength={8000} value={announcementForm.note_body} onChange={e => setAnnouncementForm(old => ({ ...old, note_body: e.target.value }))} /></label>
+        <label className="field"><span>更新日志正文（以 ## 2026-11-22 [最新] 分组，- 开头分条，可直接整体覆盖）</span><textarea className="announcement-admin-changelog" rows={10} maxLength={40000} value={announcementForm.changelog_body} onChange={e => setAnnouncementForm(old => ({ ...old, changelog_body: e.target.value }))} /></label>
+        <div className="announcement-admin-checks">
+          <label><input type="checkbox" checked={announcementForm.auto_popup} onChange={e => setAnnouncementForm(old => ({ ...old, auto_popup: e.target.checked }))} />开启首页自动弹出</label>
+          <label><input type="checkbox" checked={announcementBump} onChange={e => setAnnouncementBump(e.target.checked)} />作为新公告覆盖发布（向未静默访客重新弹出提醒）</label>
+        </div>
+        <div className="form-actions">
+          <button className="primary" type="submit" disabled={!!busy}>保存并覆盖公告</button>
+        </div>
+      </form>}
     </div>
   </div>;
 }

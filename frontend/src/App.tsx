@@ -5,6 +5,12 @@ import { createSemanticSearchClient, indexReady, loadVisitorEndpoint, loadVisito
 import type { SemanticContext } from './semantic';
 import Reader from './Reader';
 import { cleanMissionName, displayText, speakerName, errorText, missionTypeClass, versionText, Highlight, Empty } from './presentation';
+import {
+  DEFAULT_ANNOUNCEMENT, hasUnreadAnnouncement, loadAnnouncementState, markAnnouncementSeen,
+  normalizeAnnouncement, parseChangelogBody, parseNoteParagraphs, saveAnnouncementState,
+  shouldAutoShowAnnouncement, snoozeAnnouncementState,
+} from './announcement';
+import type { AnnouncementData, AnnouncementState } from './announcement';
 import { buildMissionHash, buildSearchHash, hasActiveFilters, parseRoute } from './route';
 import type { Bookmark, Catalog, DialogueLine, FeedbackContext, Filters, MatchedMission, MissionResponse, Result, SearchMode, SearchResponse, Status } from './types';
 
@@ -471,6 +477,12 @@ export default function App() {
   const [showVisitorKey, setShowVisitorKey] = useState(false);
   const [showModeHelp, setShowModeHelp] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showAnnouncement, setShowAnnouncement] = useState(false);
+  const [announcement, setAnnouncement] = useState<AnnouncementData>(DEFAULT_ANNOUNCEMENT);
+  const [announcementLoaded, setAnnouncementLoaded] = useState(false);
+  const [announcementState, setAnnouncementState] = useState<AnnouncementState>(() => loadAnnouncementState());
+  const announcementAutoChecked = useRef(false);
+  const unreadAnnouncement = announcementLoaded && hasUnreadAnnouncement(announcementState, announcement.id);
   const [visitorKey, setVisitorKey] = useState(storedVisitorKey);
   const [visitorEndpoint, setVisitorEndpoint] = useState(storedVisitorEndpoint);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => { try { return JSON.parse(localStorage.getItem('hsr-bookmarks') || '[]'); } catch { return []; } });
@@ -541,6 +553,19 @@ export default function App() {
     request<Catalog>('catalog').then(data => { if (alive) setCatalog({ ...emptyCatalog, ...data }); }).catch(() => {});
     return () => { alive = false; };
   }, [readable, status?.data.snapshot]);
+
+  useEffect(() => {
+    if (!readable) {
+      setAnnouncementLoaded(false);
+      return;
+    }
+    let alive = true;
+    request<AnnouncementData>('announcement')
+      .then(data => { if (alive) setAnnouncement(normalizeAnnouncement(data)); })
+      .catch(() => {})
+      .finally(() => { if (alive) setAnnouncementLoaded(true); });
+    return () => { alive = false; };
+  }, [readable]);
 
   const selectResult = useCallback(async (result: Result, snapshot?: string, updateRoute = true, routeQuery = searchedQuery) => {
     const generation = ++readerId.current;
@@ -679,6 +704,50 @@ export default function App() {
     return () => window.removeEventListener('hashchange', openRoute);
   }, [readable, runSearch, selectResult, clearReader]);
 
+  useEffect(() => {
+    if (!readable || !announcementLoaded || announcementAutoChecked.current) return;
+    announcementAutoChecked.current = true;
+    if (!announcement.auto_popup) return;
+    const route = parseRoute(location.hash);
+    const isHomeLanding = !route.mission && !route.query.trim() && !hasActiveFilters(route.filters);
+    if (shouldAutoShowAnnouncement(announcementState, announcement.id, Date.now(), isHomeLanding)) {
+      setShowAnnouncement(true);
+    }
+  }, [readable, announcementLoaded, announcement, announcementState]);
+
+  const openAnnouncement = useCallback(() => {
+    setAnnouncementState(old => {
+      const next = markAnnouncementSeen(old, announcement.id);
+      saveAnnouncementState(next);
+      return next;
+    });
+    setShowAnnouncement(true);
+  }, [announcement.id]);
+
+  const closeAnnouncement = useCallback(() => {
+    setAnnouncementState(old => {
+      const next = markAnnouncementSeen(old, announcement.id);
+      saveAnnouncementState(next);
+      return next;
+    });
+    setShowAnnouncement(false);
+  }, [announcement.id]);
+
+  const snoozeAnnouncement = useCallback(() => {
+    setAnnouncementState(old => {
+      const next = snoozeAnnouncementState(old, announcement.id, Date.now(), announcement.snooze_days);
+      saveAnnouncementState(next);
+      return next;
+    });
+    setShowAnnouncement(false);
+    setToast(`已设为 ${announcement.snooze_days} 天内不再自动弹出，随时可点「公告」查看`);
+  }, [announcement.id, announcement.snooze_days]);
+
+  const openFeedbackFromAnnouncement = useCallback(() => {
+    closeAnnouncement();
+    setShowFeedback(true);
+  }, [closeAnnouncement]);
+
   useEffect(() => { try { localStorage.setItem('hsr-bookmarks', JSON.stringify(bookmarks)); } catch { setToast('浏览器存储空间不足，请导出收藏备份'); } }, [bookmarks]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 3500); return () => clearTimeout(timer); }, [toast]);
   useEffect(() => { const key = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key === 'k') { event.preventDefault(); searchInput.current?.focus(); } }; document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key); }, []);
@@ -797,6 +866,9 @@ export default function App() {
           </div>
           <button type="button" className="text-button semantic-key-link" onClick={() => setShowVisitorKey(true)}>🔑 语义密钥{visitorKey && <span>已配置</span>}</button>
           <button type="button" className="text-button feedback-open-link" onClick={() => setShowFeedback(true)}>💬 意见反馈</button>
+          <button type="button" className="text-button announcement-open-link" onClick={openAnnouncement}>
+            📢 公告{unreadAnnouncement && <span className="announcement-dot" aria-label="有未读更新" />}
+          </button>
         </div>
         <div className="search-options">
           <div className="filter-row">
@@ -907,8 +979,44 @@ export default function App() {
         onClose={() => setShowFeedback(false)}
       />
     </Modal>}
+    {showAnnouncement && (() => {
+      const noteParagraphs = parseNoteParagraphs(announcement.note_body);
+      const changelogSections = parseChangelogBody(announcement.changelog_body);
+      return <Modal title={announcement.title || '站点公告与更新日志'} close={closeAnnouncement}>
+        <div className="announcement-body">
+          {noteParagraphs.length > 0 && <section className="announcement-note" aria-label={announcement.note_title || '写在前面'}>
+            <div className="announcement-note-head">
+              {announcement.note_title ? <span className="announcement-note-badge">✦ {announcement.note_title}</span> : <span />}
+              <button type="button" className="text-button announcement-feedback-inline" onClick={openFeedbackFromAnnouncement}>💬 去提反馈 →</button>
+            </div>
+            {noteParagraphs.map((text, index) => <p key={index}>{text}</p>)}
+          </section>}
+          {changelogSections.length > 0 && <section className="announcement-changelog" aria-label={announcement.changelog_title || '最近更新'}>
+            <div className="announcement-changelog-head">
+              <h3 className="announcement-section-title">{announcement.changelog_title || '最近更新'}</h3>
+              <span className="announcement-scroll-hint">上下滑动查看</span>
+            </div>
+            <div className="announcement-changelog-window">
+              <div className="announcement-releases">
+                {changelogSections.map((release, idx) => <article className="announcement-release" key={`${release.heading}-${idx}`}>
+                  <div className="announcement-release-head">
+                    <time className="announcement-date">{release.heading}</time>
+                    {release.tag && <span className="announcement-tag">{release.tag}</span>}
+                  </div>
+                  <ul>{release.items.map((item, itemIdx) => <li key={itemIdx}>{item}</li>)}</ul>
+                </article>)}
+              </div>
+            </div>
+          </section>}
+        </div>
+        <footer className="announcement-footer">
+          <button type="button" className="text-button announcement-snooze" onClick={snoozeAnnouncement}>{announcement.snooze_days} 天内不再弹出</button>
+          <button type="button" className="primary" onClick={closeAnnouncement}>我知道了</button>
+        </footer>
+      </Modal>;
+    })()}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}
-    {showSettings && <Modal title="档案管理" close={() => setShowSettings(false)} wide><Suspense fallback={<p role="status">正在加载管理工具…</p>}><Admin status={status} onRefresh={() => refresh()} onToast={setToast} /></Suspense></Modal>}
+    {showSettings && <Modal title="档案管理" close={() => setShowSettings(false)} wide><Suspense fallback={<p role="status">正在加载管理工具…</p>}><Admin status={status} onRefresh={() => refresh()} onToast={setToast} onAnnouncementSaved={next => setAnnouncement(normalizeAnnouncement(next))} /></Suspense></Modal>}
     {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot, true, bookmark.query); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{displayText(bookmark.result.display_text || bookmark.result.text) || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
     {toast && <div className="toast" role="status">{toast}</div>}
   </div>;

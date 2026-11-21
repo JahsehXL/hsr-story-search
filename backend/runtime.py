@@ -26,6 +26,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 import sqlite_vec
 
+from .announcement import AnnouncementStore
 from .embeddings import embed
 from .feedback import FeedbackStore
 from .settings import Settings, atomic_json, embedding_identity, embedding_signature, legacy_embedding_signature
@@ -147,6 +148,7 @@ class Runtime:
         for directory in ("snapshots", "staging", "uploads", "exports", "candidates"):
             (self.root / directory).mkdir(exist_ok=True)
         self.feedback = FeedbackStore(self.root)
+        self.announcement = AnnouncementStore(self.root)
         self.lock = threading.RLock()
         self.jobs_lock = threading.RLock()
         self.jobs_path = self.root / "jobs.json"

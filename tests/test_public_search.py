@@ -42,6 +42,10 @@ def test_public_readonly_private_and_local_access_modes(public_app, tmp_path, mo
         assert "missions" not in slim and "stats" not in slim
         assert "total_characters" in slim and slim["worlds"] == ["空间站"]
         assert client.get("/api/v1/characters", params={"q": "三月"}).json()["characters"] == ["三月七"]
+        ann = client.get("/api/v1/announcement")
+        assert ann.status_code == 200 and ann.json()["id"] == "2026-11-22" and ann.json()["auto_popup"] is True
+        assert client.get("/api/v1/admin/announcement").status_code == 401
+        assert client.put("/api/v1/admin/announcement", json={"title": "x", "note_body": "y"}).status_code == 401
         assert client.get("/api/v1/missions/1").status_code == 200
         assert client.get("/api/v1/missions/missing").status_code == 404
         unanchored = client.get("/api/v1/missions/1", params={"line_id": "old-line"})
@@ -62,11 +66,15 @@ def test_public_readonly_private_and_local_access_modes(public_app, tmp_path, mo
         assert client.get("/api/v1/status").json()["authenticated"] is False
         assert client.get("/api/v1/catalog").status_code == 401
         assert client.get("/api/v1/characters").status_code == 401
+        assert client.get("/api/v1/announcement").status_code == 401
         assert client.get("/api/v1/missions/1").status_code == 401
         assert client.post("/api/v1/search", json={"query": "列车"}).status_code == 401
         assert client.post("/api/v1/auth/login", json={"code": "private-reader-code"}).status_code == 200
         assert client.get("/api/v1/catalog").status_code == 200
         assert client.get("/api/v1/characters").status_code == 200
+        assert client.get("/api/v1/announcement").status_code == 200
+        assert client.get("/api/v1/admin/announcement").status_code == 403
+        assert client.put("/api/v1/admin/announcement", json={"title": "x", "note_body": "y"}).status_code == 403
         assert client.get("/api/v1/admin/settings").status_code == 403
 
     monkeypatch.delenv("HSR_ACCESS_CODE", raising=False)
@@ -74,8 +82,31 @@ def test_public_readonly_private_and_local_access_modes(public_app, tmp_path, mo
         assert client.get("/api/v1/status").json()["authenticated"] is False
         assert client.get("/api/v1/catalog").status_code == 401
         assert client.get("/api/v1/characters").status_code == 401
+        assert client.get("/api/v1/announcement").status_code == 401
         assert client.post("/api/v1/auth/bootstrap", json={"token": "test-bootstrap"}).status_code == 200
         assert client.get("/api/v1/admin/settings").status_code == 200
+        initial_ann = client.get("/api/v1/admin/announcement")
+        assert initial_ann.status_code == 200 and initial_ann.json()["id"] == "2026-11-22"
+        first_id = initial_ann.json()["id"]
+        saved_same = client.put("/api/v1/admin/announcement", json={
+            "title": "站点新公告", "note_title": "致访客", "note_body": "第一段\n\n第二段",
+            "changelog_title": "更新说明", "changelog_body": "## 2026-11-23 [最新]\n- 全新覆盖内容",
+            "auto_popup": False, "snooze_days": 5, "bump_version": False,
+        })
+        assert saved_same.status_code == 200 and saved_same.json()["id"] == first_id
+        assert saved_same.json()["auto_popup"] is False and saved_same.json()["snooze_days"] == 5
+        saved_bump = client.put("/api/v1/admin/announcement", json={
+            "title": "第二次覆盖", "note_title": "", "note_body": "",
+            "changelog_title": "更新日志", "changelog_body": "## 2026-11-24\n- 二次发布",
+            "auto_popup": True, "snooze_days": 14, "bump_version": True,
+        })
+        assert saved_bump.status_code == 200 and saved_bump.json()["id"] != first_id
+        pub = client.get("/api/v1/announcement").json()
+        assert pub["title"] == "第二次覆盖" and pub["id"] == saved_bump.json()["id"] and pub["note_body"] == ""
+        bad_empty = client.put("/api/v1/admin/announcement", json={
+            "title": "空内容", "note_body": "", "changelog_body": "   ",
+        })
+        assert bad_empty.status_code == 400
         assert client.post("/api/v1/auth/bootstrap", json={"token": "test-bootstrap"}).status_code == 401
 
 

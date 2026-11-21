@@ -1,3 +1,4 @@
+// 小红书小工具仅保留离线检索与阅读体验：不引入网页版的站点公告按钮与首页公告弹窗。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Reader from '../frontend/src/Reader';
 import { cleanMissionName, displayText, Empty, errorText, Highlight, missionTypeClass, speakerName, versionText } from '../frontend/src/presentation';
