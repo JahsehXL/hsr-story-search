@@ -17,6 +17,7 @@ import zipfile
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, UploadFile
@@ -51,6 +52,16 @@ class SearchRequest(BaseModel):
     offset: int = Field(default=0, ge=0, le=1000)
     snapshot: str | None = Field(default=None, pattern=r"^[a-f0-9]{24}$")
     query_vector: list[float] | None = Field(default=None, max_length=32768)
+
+
+RandomFilterKey = Literal["world", "worlds", "version", "versions", "type", "types", "character", "characters"]
+RandomFilterTerm = Annotated[str, Field(max_length=200)]
+
+
+class RandomRequest(BaseModel):
+    filters: dict[RandomFilterKey, RandomFilterTerm | Annotated[list[RandomFilterTerm], Field(max_length=30)]] = Field(default_factory=dict)
+    # Newest first so the fallback can avoid repeating the current quote.
+    recent_line_ids: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=30)
 
 
 class TrustedClientAddressMiddleware:
@@ -252,7 +263,7 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                 return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)
             route = request.url.path
             public_routes = {"/api/v1/status", "/api/v1/health", "/api/v1/auth/login", "/api/v1/auth/bootstrap", "/api/v1/auth/logout"}
-            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/characters", "/api/v1/search", "/api/v1/feedback", "/api/v1/announcement"} or route.startswith("/api/v1/missions/"))
+            public_query = public_readonly and (route in {"/api/v1/catalog", "/api/v1/characters", "/api/v1/search", "/api/v1/random", "/api/v1/feedback", "/api/v1/announcement"} or route.startswith("/api/v1/missions/"))
             if route not in public_routes and not public_query:
                 current_session = session(request)
                 if not current_session:
@@ -462,6 +473,27 @@ def create_app(data_dir: Path | str | None = None, mode: str = "local", bootstra
                     seen_dedup.add(dedup_key)
                 ordered.append(item)
             return {"results": ordered[payload.offset:payload.offset + payload.limit], "matched_missions": matched_missions, "total": len(ordered), "truncated": len(lexical) >= 500 or len(semantic) >= 500, "search_mode": search_mode, "notice": notice, "elapsed_ms": round((time.monotonic() - start) * 1000), "snapshot": snapshot}
+        finally:
+            search_slots.release()
+
+    @app.post("/api/v1/random")
+    def random_story(payload: RandomRequest, user=Depends(reader)):
+        limited("search:" + user["id"], runtime.settings.value["limits"]["search_per_minute"])
+        start = time.monotonic()
+        if not search_slots.acquire(timeout=5.0):
+            raise HTTPException(429, "随机剧情排队等待超时，请稍后重试", headers={"Retry-After": "2"})
+        try:
+            path, snapshot = runtime.active_path()
+            if not path:
+                raise ValueError("请先导入剧情数据")
+            from .search import random_dialogue
+            result = random_dialogue(path, payload.filters, payload.recent_line_ids)
+            return {
+                "results": [result] if result else [], "total": int(result is not None),
+                "search_mode": "random", "snapshot": snapshot,
+                "notice": "" if result else "当前筛选条件下没有可抽取的剧情。",
+                "elapsed_ms": round((time.monotonic() - start) * 1000),
+            }
         finally:
             search_slots.release()
 

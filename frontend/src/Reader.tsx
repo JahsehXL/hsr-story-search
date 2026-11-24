@@ -17,6 +17,7 @@ interface ReaderProps {
   onCopy: (text: string) => void;
   onShare: (line?: DialogueLine) => void;
   onBack: () => void;
+  onRetry?: () => void;
   onVersionSave: (version: string, source: string, status: string) => Promise<void>;
   onOpenCurrentForVersion?: () => void;
   onExpand?: () => void;
@@ -38,7 +39,8 @@ function DialogueOrigins({ origin }: { origin: DialogueOrigin }) {
   </div>;
 }
 
-function Dialogue({ line, query, hit, onShare }: { line: DialogueLine; query: string; hit: boolean; onShare: (line: DialogueLine) => void }) {
+function Dialogue({ line, query, hit, anchorLabel, onShare }: { line: DialogueLine; query: string; hit: boolean; anchorLabel: string;
+  onShare: (line: DialogueLine) => void }) {
   const isNarration = !line.speaker && !line.kind.includes('option');
   const name = isNarration ? '旁白' : speakerName(line.speaker);
   const isPlayer = !isNarration && name === '开拓者';
@@ -47,15 +49,15 @@ function Dialogue({ line, query, hit, onShare }: { line: DialogueLine; query: st
     <div className="dialogue-body">
       <p><Highlight text={line.text} query={query} /></p>
       <div className="dialogue-meta">
-        {hit && <span className="hit-label">✦ 命中原句</span>}
+        {hit && <span className="hit-label">✦ {anchorLabel}</span>}
         <button className="line-anchor" onClick={() => onShare(line)} title="复制这句话的位置" aria-label="复制这句话的位置">#</button>
       </div>
     </div>
   </article>;
 }
 
-function ChoiceCard({ choice, selectedId, hitId, query, onChoose, onShare }: {
-  choice: ChoiceSet; selectedId?: string; hitId: string; query: string;
+function ChoiceCard({ choice, selectedId, hitId, query, anchorLabel, onChoose, onShare }: {
+  choice: ChoiceSet; selectedId?: string; hitId: string; query: string; anchorLabel: string;
   onChoose: (option: DialogueLine) => void; onShare: (line: DialogueLine) => void;
 }) {
   const current = choice.options.find(option => option.id === selectedId) || choice.options[0];
@@ -85,7 +87,7 @@ function ChoiceCard({ choice, selectedId, hitId, query, onChoose, onShare }: {
           <span className="choice-option-badge" aria-hidden="true">{isSelected ? '❖' : '◇'} 选项 {idx + 1}</span>
           <span className="choice-option-text"><Highlight text={option.text} query={query} /></span>
           <span className="choice-option-meta">
-            {isHit && <span className="hit-label">✦ 命中原句</span>}
+            {isHit && <span className="hit-label">✦ {anchorLabel}</span>}
             <span className="choice-option-state" aria-hidden="true">{isSelected ? '已选' : hasDistinctBranches ? '切换分支 →' : '选择'}</span>
           </span>
         </button>;
@@ -95,7 +97,7 @@ function ChoiceCard({ choice, selectedId, hitId, query, onChoose, onShare }: {
   </section>;
 }
 
-export default function Reader({ selected, detail, busy, query, isAdmin, bookmarked, onBookmark, onCopy, onShare, onBack, onVersionSave, onOpenCurrentForVersion, error, onMore, onEarlier }: ReaderProps) {
+export default function Reader({ selected, detail, busy, query, isAdmin, bookmarked, onBookmark, onCopy, onShare, onBack, onRetry, onVersionSave, onOpenCurrentForVersion, error, onMore, onEarlier }: ReaderProps) {
   const [editing, setEditing] = useState(false);
   const [version, setVersion] = useState('');
   const [source, setSource] = useState('');
@@ -226,6 +228,9 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
   }
 
   if (!selected) return <section className="reader reader-idle"><div><h2>选择左侧结果，回到故事里</h2><p>以剧本台词本形式查看完整任务上下文、开放版本与全部玩家分支选项。</p></div></section>;
+  const isRandom = selected.match_type === 'random';
+  const anchorLabel = isRandom ? '随机原句' : '命中原句';
+  const bookmarkLabel = `${bookmarked ? '取消收藏' : '收藏'}${isRandom ? '随机剧情' : '命中结果'}`;
   const chapter = mission?.chapter || selected.chapter;
   const world = mission?.world || selected.world;
   const hitLine = detail?.lines.find(line => line.id === hitId);
@@ -243,7 +248,7 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
     <header className="reader-heading">
       <div className="reader-top-row">
         <div className="reader-breadcrumb">
-          <button type="button" className="reader-back-button" onClick={onBack} title="返回搜索结果">← 返回</button>
+          <button type="button" className="reader-back-button" onClick={onBack} title={isRandom ? '返回随机结果' : '返回搜索结果'}>← 返回</button>
           {typeKey && <span className={`mission-badge type-${missionTypeClass(typeKey)}`}>{missionTypes[typeKey] || typeKey}</span>}
           <span className={`version-label ${origin || !(mission?.version || selected.version) ? 'unverified' : ''}`}>{verText}</span>
           <span>{mission?.world || selected.world || '剧情对白'}</span>
@@ -251,7 +256,7 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
         </div>
         <div className="reader-meta">
           {detail && <button className="text-button" aria-pressed={showFullText} title={showFullText ? '按需显示屏幕附近的对白，减少内存占用' : '渲染全部已加载对白，支持浏览器查找和辅助技术遍历，会占用更多内存'} onClick={() => setFullTextMode({ missionId: selected.mission_id, enabled: !showFullText })}>{showFullText ? '按需显示' : '显示全文'}</button>}
-          {hitGroup && <button type="button" className="text-button locate-hit-button" onClick={locateHit}>⌖ 定位命中原句</button>}
+          {hitGroup && <button type="button" className="text-button locate-hit-button" onClick={locateHit}>⌖ 定位{anchorLabel}</button>}
           {isAdmin && mission && (onOpenCurrentForVersion
             ? <button className="text-button" onClick={onOpenCurrentForVersion}>打开当前快照编辑</button>
             : <button className="text-button" onClick={() => setEditing(value => !value)}>补充版本</button>)}
@@ -259,7 +264,7 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
       </div>
       <div className="reader-title-row">
         <h1>{name}</h1>
-        <button className={`icon-button bookmark-button ${bookmarked ? 'is-saved' : ''}`} title={bookmarked ? '取消收藏命中结果' : '收藏命中结果'} aria-label={bookmarked ? '取消收藏命中结果' : '收藏命中结果'} onClick={onBookmark}>{bookmarked ? '★' : '☆'}</button>
+        <button className={`icon-button bookmark-button ${bookmarked ? 'is-saved' : ''}`} title={bookmarkLabel} aria-label={bookmarkLabel} onClick={onBookmark}>{bookmarked ? '★' : '☆'}</button>
       </div>
       {origin && <DialogueOrigins origin={origin} />}
       {editing && !onOpenCurrentForVersion && <form className="version-editor" onSubmit={async event => {
@@ -276,11 +281,11 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
       {saveError && <p className="error-message" role="alert">{saveError}</p>}
     </header>
     <div className="reader-scroll" ref={scrollRef} aria-busy={busy}>
-      {busy && !detail ? <div className="reading-skeleton"><div /><div /><div /></div> : error ? <Empty symbol="!" title="暂时无法打开这段剧情"><p>{error}</p></Empty> : detail ? <>
+      {busy && !detail ? <div className="reading-skeleton"><div /><div /><div /></div> : error ? <Empty symbol="!" title="暂时无法打开这段剧情"><p>{error}</p>{onRetry && <button type="button" className="secondary" onClick={onRetry}>重试打开</button>}</Empty> : detail ? <>
         <div className="reading-focusbar">
           <span>{hasEarlier || hasMore ? '当前剧情上下文' : '任务台词本'}（当前路径 {visibleLines.length} 句）</span>
           <div className="reading-focusbar-actions">
-            {hasCustomBranch && <button className="text-button" onClick={() => { setChoiceOverrides({ identity, selections: {} }); setAltOverrides({ identity, selections: {} }); }}>↺ 回到命中分支</button>}
+            {hasCustomBranch && <button className="text-button" onClick={() => { setChoiceOverrides({ identity, selections: {} }); setAltOverrides({ identity, selections: {} }); }}>↺ 回到{isRandom ? '随机对白所在' : '命中'}分支</button>}
           </div>
         </div>
         {detail.anchor_missing && <p className="inline-alert" role="status">此快照中找不到链接指向的台词，已打开任务上下文。</p>}
@@ -333,8 +338,8 @@ export default function Reader({ selected, detail, busy, query, isAdmin, bookmar
                 const key = `${identity}:${lines[0].id}`;
                 return <StoryBlock key={key} scrollRef={scrollRef} estimatedHeight={segment.kind === 'dialogue' ? lines.length * 100 : 110 + lines.length * 70} containsHit={lines.some(line => line.id === hitId)} initiallyVisible={groupIndex === 0 && index < 2} renderAll={showFullText}>
                   {() => segment.kind === 'dialogue' ? <div className="dialogue-group">
-                    {segment.lines.map(line => <Dialogue key={line.id} line={line} query={query} hit={line.id === hitId} onShare={onShare} />)}
-                  </div> : <ChoiceCard choice={segment.choice} selectedId={resolved.selections[segment.choice.id]} hitId={hitId} query={query} onChoose={line => choose(segment.choice, line)} onShare={onShare} />}
+                    {segment.lines.map(line => <Dialogue key={line.id} line={line} query={query} hit={line.id === hitId} anchorLabel={anchorLabel} onShare={onShare} />)}
+                  </div> : <ChoiceCard choice={segment.choice} selectedId={resolved.selections[segment.choice.id]} hitId={hitId} query={query} anchorLabel={anchorLabel} onChoose={line => choose(segment.choice, line)} onShare={onShare} />}
                 </StoryBlock>;
               })}
             </div>;

@@ -177,7 +177,7 @@ def expand_query(query: str) -> list[str]:
     return values
 
 
-def filter_sql(filters: dict, alias: str = "m", chunk_alias: str = "c") -> tuple[str, list]:
+def filter_sql(filters: dict, alias: str = "m", chunk_alias: str = "c", *, line_speaker: bool = False) -> tuple[str, list]:
     clauses: list[str] = [f"{chunk_alias}.script!='unlinked'", f"{chunk_alias}.mission_id!='unlinked'"]
     args: list = []
     for singular, plural, column in (("world", "worlds", "world"), ("type", "types", "type"),
@@ -189,27 +189,18 @@ def filter_sql(filters: dict, alias: str = "m", chunk_alias: str = "c") -> tuple
                 values = ["" if item == "unknown" else item for item in values]
             clauses.append(f"{alias}.{column} IN ({','.join('?' for _ in values)})")
             args.extend(str(item) for item in values)
-    character = filters.get("characters") or filters.get("character")
-    if character:
-        raw_values = character if isinstance(character, list) else [character]
-        expanded: list[str] = []
-        for item in raw_values:
-            clean = str(item).strip()
-            if not clean:
-                continue
-            canonical = ALIASES.get(clean, clean)
-            for candidate in (clean, canonical):
-                if candidate and candidate not in expanded:
-                    expanded.append(candidate)
-        if expanded:
-            speaker_clauses = [f"fl.speaker IN ({','.join('?' for _ in expanded)})"]
-            speaker_args: list[str] = list(expanded)
-            for candidate in expanded:
-                escaped = candidate.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                speaker_clauses.append("fl.speaker LIKE ? ESCAPE '\\'")
-                speaker_args.append(f"{escaped}%")
-            clauses.append(f"EXISTS(SELECT 1 FROM lines fl WHERE fl.chunk_id={chunk_alias}.id AND ({' OR '.join(speaker_clauses)}))")
-            args.extend(speaker_args)
+    expanded = _expand_character_filter(filters)
+    if expanded:
+        speaker = f"trim({chunk_alias}.speaker)" if line_speaker else "fl.speaker"
+        speaker_clauses = [f"{speaker} IN ({','.join('?' for _ in expanded)})"]
+        args.extend(expanded)
+        for candidate in expanded:
+            escaped = candidate.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            speaker_clauses.append(f"{speaker} LIKE ? ESCAPE '\\'")
+            args.append(f"{escaped}%")
+        condition = "(" + " OR ".join(speaker_clauses) + ")"
+        clauses.append(condition if line_speaker else
+                       f"EXISTS(SELECT 1 FROM lines fl WHERE fl.chunk_id={chunk_alias}.id AND {condition})")
     return (" AND " + " AND ".join(clauses) if clauses else ""), args
 
 
@@ -251,6 +242,56 @@ def _speaker_matches_filter(speaker: str, expanded_chars: list[str]) -> bool:
         return True
     spk = (speaker or "").strip()
     return any(spk == c or spk.startswith(c) for c in expanded_chars)
+
+
+_RANDOM_TEXT_LETTERS = re.compile(r"[^\W\d_]")
+_RANDOM_PLACEHOLDERS = {"占位", "占位符", "占位文本", "测试文本", "测试对白", "暂无文本", "暂无对白", "placeholder", "todo", "null", "none", "undefined"}
+
+
+def _substantive_dialogue(text: str) -> bool:
+    letters = _RANDOM_TEXT_LETTERS.findall(text.lower())
+    return len(letters) >= 3 and len(set(letters)) >= 2 and "".join(letters) not in _RANDOM_PLACEHOLDERS
+
+
+def random_dialogue(path: Path | str, filters: dict, recent_line_ids: list[str]) -> dict | None:
+    condition, args = filter_sql(filters, chunk_alias="l", line_speaker=True)
+    sql = f"""SELECT coalesce(l.chunk_id, 0) chunk_id,l.id line_id,l.mission_id,l.script,l.branch,
+        l.sentence_id,l.speaker,l.text display_text,l.search_text text,l.kind,
+        m.name mission_name,m.chapter,m.world,m.type,m.version,m.version_status
+        FROM lines l JOIN missions m ON m.id=l.mission_id
+        WHERE l.kind='dialogue' AND trim(l.speaker, ' ' || char(9, 10, 13, 12288))<>''
+        AND length(trim(l.text))>=12{condition}"""
+    with open_db(path) as conn:
+        conn.create_function("substantive_dialogue", 1, _substantive_dialogue, deterministic=True)
+
+        def draw(extra: str, order: str, extra_args: list[str]):
+            params = [*args, *extra_args]
+            tail = f" ORDER BY {order}RANDOM() LIMIT 1"
+            candidate = conn.execute(sql + extra + tail, params).fetchone()
+            if candidate is not None and not _substantive_dialogue(candidate["text"]):
+                # Rejection keeps the draw uniform among meaningful lines. The
+                # slower SQL check only runs when the first candidate is noise.
+                candidate = conn.execute(
+                    sql + extra + " AND substantive_dialogue(l.search_text)" + tail, params,
+                ).fetchone()
+            return candidate
+
+        if recent_line_ids:
+            placeholders = ",".join("?" for _ in recent_line_ids)
+            row = draw(f" AND l.search_text NOT IN (SELECT search_text FROM lines WHERE id IN ({placeholders}))",
+                       "", recent_line_ids)
+            if row is None:
+                # A narrow filter can exhaust the history. Prefer a different quote
+                # from the most recent draw while keeping every filter in the query.
+                row = draw("", "l.search_text IS (SELECT search_text FROM lines WHERE id=?), ", recent_line_ids[:1])
+        else:
+            row = draw("", "", [])
+    if row is None:
+        return None
+    result = {**dict(row), "match_type": "random", "score": 0}
+    if origin := dialogue_origin(result["script"], result["sentence_id"]):
+        result["dialogue_origin"] = origin
+    return result
 
 
 def _results(conn, ids: list[int], query: str, allow_fuzzy: bool = False, filters: dict | None = None) -> list[dict]:

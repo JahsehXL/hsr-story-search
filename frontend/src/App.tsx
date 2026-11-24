@@ -12,6 +12,7 @@ import {
 } from './announcement';
 import type { AnnouncementData, AnnouncementState } from './announcement';
 import { buildMissionHash, buildSearchHash, hasActiveFilters, parseRoute } from './route';
+import { loadRandomHistory, rememberRandomLine, restoredRandomResponse, restoredRandomResult, saveRandomHistory } from './random';
 import type { Bookmark, Catalog, DialogueLine, FeedbackContext, Filters, MatchedMission, MissionResponse, Result, SearchMode, SearchResponse, Status } from './types';
 
 const Admin = lazy(() => import('./Admin'));
@@ -42,6 +43,7 @@ const labels: Record<string, string> = {
   Main: '开拓任务', Branch: '冒险任务', Companion: '同行任务', Daily: '日常任务',
   Interlude: '开拓续闻', Gap: '开拓续闻', exact: '原文命中', keyword: '关键词匹配', fuzzy: '错字容错',
   semantic: '剧情相关', hybrid: '描述找剧情', text: '精准关键词', unknown: '版本待核实',
+  random: '随机对白',
   queued: '等待中', running: '进行中', paused: '已暂停', completed: '已完成',
   failed: '失败', cancelled: '已取消', interrupted: '已中断', succeeded: '已完成',
   import_directory: '导入目录', import_upload: '导入文件', download_source: '更新原始数据',
@@ -55,6 +57,12 @@ function matchLabel(result: Result) {
   if (result.matched_field === 'speaker') return '角色匹配';
   if (result.matched_field === 'metadata') return '剧情出处匹配';
   return labels[result.match_type] || '相关对白';
+}
+
+function ShuffleIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3 6h2c6 0 8 12 14 12h2m-4-4 4 4-4 4M3 18h2c2 0 4-2 5-4m4-4c1-2 3-4 5-4h2m-4-4 4 4-4 4" />
+  </svg>;
 }
 
 function SelectField({ label, value, values, onChange, searchable = false, format = (v: string) => labels[v] || v, onSearch }: {
@@ -464,13 +472,17 @@ export default function App() {
   }
   const [mode, setMode] = useState<SearchMode>(initial.current.mode);
   const [response, setResponse] = useState<SearchResponse | null>(null);
-  const [searching, setSearching] = useState(false);
+  const [pending, setPending] = useState<'search' | 'random' | null>(null);
+  const searching = pending === 'search';
+  const randomizing = pending === 'random';
   const [searchError, setSearchError] = useState('');
+  const [randomError, setRandomError] = useState('');
   const [selected, setSelected] = useState<Result | null>(null);
   const [detail, setDetail] = useState<MissionResponse | null>(null);
   const [reading, setReading] = useState(false);
   const [readerError, setReaderError] = useState('');
   const [readerQuery, setReaderQuery] = useState('');
+  const [readerSnapshot, setReaderSnapshot] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
@@ -487,22 +499,43 @@ export default function App() {
   const [visitorEndpoint, setVisitorEndpoint] = useState(storedVisitorEndpoint);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => { try { return JSON.parse(localStorage.getItem('hsr-bookmarks') || '[]'); } catch { return []; } });
   const [toast, setToast] = useState('');
-  const searchId = useRef(0);
   const readerId = useRef(0);
-  const searchController = useRef<AbortController | null>(null);
+  const resultRequest = useRef<{ controller: AbortController; kind: 'search' | 'random' } | null>(null);
   const readerController = useRef<AbortController | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const booted = useRef(false);
   const activeSearch = useRef({ filters: initial.current.filters, mode: initial.current.mode, query: initial.current.query });
   const activeSemantic = useRef<SemanticContext | null>(null);
   const semanticClient = useRef(createSemanticSearchClient());
+  const randomHistory = useRef<string[] | null>(null);
+
+  const cancelResults = useCallback((kind?: 'search' | 'random') => {
+    if (kind && resultRequest.current?.kind !== kind) return;
+    resultRequest.current?.controller.abort();
+    resultRequest.current = null;
+    setPending(null);
+  }, []);
+
+  const beginResults = useCallback((kind: 'search' | 'random') => {
+    resultRequest.current?.controller.abort();
+    const controller = new AbortController();
+    resultRequest.current = { controller, kind };
+    setPending(kind);
+    setSearchError('');
+    setRandomError('');
+    return controller;
+  }, []);
+
+  const rememberDraw = useCallback((lineId: string) => {
+    randomHistory.current = rememberRandomLine(randomHistory.current ?? loadRandomHistory(), lineId);
+    saveRandomHistory(randomHistory.current);
+  }, []);
 
   function updateVisitorKey(value: string, endpointValue = '') {
     const endpoint = saveVisitorEndpoint(localStorage, endpointValue);
     const key = saveVisitorKey(localStorage, value);
     semanticClient.current.clear();
-    searchId.current++;
-    setSearching(false);
+    cancelResults('search');
     setVisitorKey(key);
     setVisitorEndpoint(endpoint);
     setShowVisitorKey(false);
@@ -527,11 +560,11 @@ export default function App() {
     setReading(false);
     setReaderError('');
     setReaderQuery('');
+    setReaderSnapshot('');
   }, []);
   useEffect(() => () => {
-    searchId.current++;
     readerId.current++;
-    searchController.current?.abort();
+    resultRequest.current?.controller.abort();
     readerController.current?.abort();
   }, []);
   useEffect(() => {
@@ -567,26 +600,41 @@ export default function App() {
     return () => { alive = false; };
   }, [readable]);
 
-  const selectResult = useCallback(async (result: Result, snapshot?: string, updateRoute = true, routeQuery = searchedQuery) => {
+  const selectResult = useCallback(async (
+    result: Result, snapshot?: string, updateRoute = true, routeQuery = searchedQuery, restoreRandom = false,
+  ) => {
     const generation = ++readerId.current;
     readerController.current?.abort();
     const controller = new AbortController();
     readerController.current = controller;
     setSelected(result); setDetail(null); setReaderError(''); setReaderQuery(routeQuery);
+    setReaderSnapshot(snapshot || '');
     if (updateRoute) {
       history.replaceState(null, '', buildMissionHash({ ...activeSearch.current, query: routeQuery }, {
         mission_id: result.mission_id, line_id: result.line_id, script: result.script, snapshot,
-      }));
+      }, result.match_type === 'random' ? 'random' : 'search'));
     }
     if (!result.mission_id) { setReading(false); return; }
     setReading(true);
     const p = new URLSearchParams();
     if (result.line_id) p.set('line_id', result.line_id);
     if (snapshot) p.set('snapshot', snapshot);
-    try { const value = await request<MissionResponse>(`missions/${encodeURIComponent(result.mission_id)}?${p}`, { signal: controller.signal }); if (generation === readerId.current) setDetail(value); }
+    try {
+      const value = await request<MissionResponse>(`missions/${encodeURIComponent(result.mission_id)}?${p}`, { signal: controller.signal });
+      if (generation !== readerId.current) return;
+      setDetail(value);
+      if (restoreRandom) {
+        const restored = restoredRandomResult(result, value);
+        if (restored) {
+          setSelected(current => current ? restored : null);
+          rememberDraw(restored.line_id);
+        }
+        setResponse(restoredRandomResponse(value.snapshot || snapshot || '', restored));
+      }
+    }
     catch (err) { if (generation === readerId.current) setReaderError(errorText(err)); }
     finally { if (generation === readerId.current) setReading(false); }
-  }, [searchedQuery]);
+  }, [searchedQuery, rememberDraw]);
 
   const runSearch = useCallback(async (
     value: string,
@@ -602,19 +650,16 @@ export default function App() {
     const criteria = offset > 0 ? activeSearch.current : { query: value.trim(), filters: { ...activeFilters }, mode: activeMode };
     const semanticContext = offset > 0 ? activeSemantic.current : status ? { snapshot: status.data.snapshot, embedding: status.embedding } : null;
     if (criteria.mode === 'hybrid' && criteria.query && semanticContext && indexReady(semanticContext.embedding) && !visitorKey && !serverKeyReady(semanticContext.embedding)) {
+      cancelResults('random');
       setShowVisitorKey(true);
       return;
     }
-    const generation = ++searchId.current;
-    searchController.current?.abort();
-    const controller = new AbortController();
-    searchController.current = controller;
-    setSearching(true); setSearchError('');
+    const { signal } = beginResults('search');
     try {
       const prepared = criteria.mode === 'hybrid' && criteria.query && semanticContext ? await semanticClient.current.prepare(criteria.query, visitorKey, semanticContext, visitorEndpoint) : {};
-      if (generation !== searchId.current) return;
-      const data = await searchRequest<SearchResponse>({ ...criteria, limit: 30, offset, snapshot: offset > 0 ? response?.snapshot : semanticContext?.snapshot || undefined }, prepared, controller.signal);
-      if (generation !== searchId.current) return;
+      if (signal.aborted) return;
+      const data = await searchRequest<SearchResponse>({ ...criteria, limit: 30, offset, snapshot: offset > 0 ? response?.snapshot : semanticContext?.snapshot || undefined }, prepared, signal);
+      if (signal.aborted) return;
       setSearchedQuery(criteria.query);
       setResponse(old => offset > 0 && old ? { ...data, matched_missions: old.matched_missions, results: [...old.results, ...data.results] } : data);
       if (offset === 0) {
@@ -625,11 +670,51 @@ export default function App() {
           history.replaceState(null, '', buildSearchHash(criteria));
         }
       }
-    } catch (err) { if (generation === searchId.current) setSearchError(errorText(err)); }
-    finally { if (generation === searchId.current) setSearching(false); }
-  }, [filters, mode, response?.snapshot, status, visitorKey, visitorEndpoint, clearReader]);
+    } catch (err) { if (!signal.aborted) setSearchError(errorText(err)); }
+    finally { if (!signal.aborted) cancelResults('search'); }
+  }, [filters, mode, response?.snapshot, status, visitorKey, visitorEndpoint, clearReader, beginResults, cancelResults]);
+
+  function openRandomResult(data: SearchResponse, result: Result, drawFilters: Filters) {
+    const criteria = { query: '', filters: drawFilters, mode };
+    rememberDraw(result.line_id);
+    activeSearch.current = criteria;
+    activeSemantic.current = null;
+    setSearchedQuery('');
+    setResponse(data);
+    const hash = buildMissionHash(criteria, { ...result, snapshot: data.snapshot }, 'random');
+    if (parseRoute(location.hash).path === '/random') history.replaceState(null, '', hash);
+    else history.pushState(null, '', hash);
+    void selectResult(result, data.snapshot, false, '');
+  }
+
+  async function runRandom() {
+    const { signal } = beginResults('random');
+    const recent = randomHistory.current ?? loadRandomHistory();
+    const recentLineIds = selected?.match_type === 'random' ? rememberRandomLine(recent, selected.line_id) : recent;
+    try {
+      const data = await post<SearchResponse>('random', { filters, recent_line_ids: recentLineIds }, { signal });
+      if (signal.aborted) return;
+      const result = data.results[0];
+      if (!result) {
+        setRandomError(data.notice || '当前筛选条件下没有可抽取的剧情。');
+        return;
+      }
+      openRandomResult(data, result, filters);
+    } catch (err) {
+      if (!signal.aborted) setRandomError(`随机剧情加载失败，${errorText(err)}`);
+    } finally {
+      if (!signal.aborted) cancelResults('random');
+    }
+  }
 
   const closeReader = useCallback(() => {
+    cancelResults('random');
+    setRandomError('');
+    if (parseRoute(location.hash).path === '/random') {
+      if (reading && !response?.results.length) setSelected(null);
+      else clearReader();
+      return;
+    }
     clearReader();
     const criteria = activeSearch.current;
     if (criteria.query.trim() || hasActiveFilters(criteria.filters)) {
@@ -640,44 +725,47 @@ export default function App() {
     } else {
       history.replaceState(null, '', '#/');
     }
-  }, [clearReader, response, runSearch]);
+  }, [cancelResults, clearReader, reading, response, runSearch]);
 
   const applyFilters = useCallback((nextFilters: Filters) => {
     setFilters(nextFilters);
+    if (response?.search_mode === 'random' || randomizing) {
+      cancelResults();
+      setRandomError('');
+      return;
+    }
     if (query.trim() || hasActiveFilters(nextFilters)) {
       void runSearch(query, 0, nextFilters);
     } else {
       setResponse(null);
-      searchId.current++;
-      searchController.current?.abort();
-      setSearching(false);
+      cancelResults();
+      setSearchError('');
+      setRandomError('');
       activeSearch.current = { query: '', filters: emptyFilters, mode };
       clearReader();
       history.replaceState(null, '', '#/');
     }
-  }, [query, mode, runSearch, clearReader]);
+  }, [query, mode, runSearch, clearReader, cancelResults, response?.search_mode, randomizing]);
 
   useEffect(() => {
     const synchronizeKey = (event: StorageEvent) => {
       if (event.key !== VISITOR_KEY_STORAGE && event.key !== VISITOR_ENDPOINT_STORAGE && event.key !== null) return;
       semanticClient.current.clear();
-      searchId.current++;
-      setSearching(false);
+      cancelResults('search');
       setVisitorKey(storedVisitorKey());
       setVisitorEndpoint(storedVisitorEndpoint());
     };
     window.addEventListener('storage', synchronizeKey);
     return () => window.removeEventListener('storage', synchronizeKey);
-  }, []);
+  }, [cancelResults]);
 
   useEffect(() => {
     if (!readable) return;
     function openRoute() {
       const route = parseRoute(location.hash);
-      searchId.current++;
-      searchController.current?.abort();
-      setSearching(false);
+      cancelResults();
       setSearchError('');
+      setRandomError('');
       setResponse(null);
       setQuery(route.query);
       setSearchedQuery(route.query);
@@ -686,10 +774,12 @@ export default function App() {
       activeSearch.current = { query: route.query.trim(), filters: route.filters, mode: route.mode };
       clearReader();
       const hasCriteria = Boolean(route.query.trim() || hasActiveFilters(route.filters));
+      const isRandom = route.path === '/random' && Boolean(route.mission && route.line);
       if (route.mission) {
-        const result: Result = { chunk_id: 0, mission_id: route.mission, mission_name: '', chapter: '', world: '', version: '', version_status: 'unknown', speaker: '', text: '', line_id: route.line, script: route.script, branch: '', match_type: '', score: 0 };
-        void selectResult(result, route.snapshot, false, route.query);
-        if (hasCriteria) {
+        const result: Result = { chunk_id: 0, mission_id: route.mission, mission_name: '', chapter: '', world: '', version: '', version_status: 'unknown', speaker: '', text: '', line_id: route.line, script: route.script, branch: '', match_type: isRandom ? 'random' : '', score: 0 };
+        if (isRandom) setResponse(restoredRandomResponse(route.snapshot));
+        void selectResult(result, route.snapshot, false, route.query, isRandom);
+        if (hasCriteria && !isRandom) {
           void runSearch(route.query, 0, route.filters, route.mode, { keepReader: true, updateRoute: false });
         }
       } else if (hasCriteria) {
@@ -702,7 +792,7 @@ export default function App() {
     }
     window.addEventListener('hashchange', openRoute);
     return () => window.removeEventListener('hashchange', openRoute);
-  }, [readable, runSearch, selectResult, clearReader]);
+  }, [readable, runSearch, selectResult, clearReader, cancelResults]);
 
   useEffect(() => {
     if (!readable || !announcementLoaded || announcementAutoChecked.current) return;
@@ -755,17 +845,23 @@ export default function App() {
   async function copy(text: string) { try { await navigator.clipboard.writeText(text); setToast('已复制到剪贴板'); } catch { setToast('无法访问剪贴板，请手动选择文字复制'); } }
   function share(line?: DialogueLine) {
     if (!selected) return;
-    const params = new URLSearchParams({ mission: selected.mission_id, line: line?.id || selected.line_id, script: line?.script || selected.script });
-    if (readerQuery) params.set('q', readerQuery);
-    if (detail?.snapshot || response?.snapshot) params.set('snapshot', detail?.snapshot || response!.snapshot);
-    void copy(`${location.origin}${location.pathname}#/search?${params}`);
+    const isRandomAnchor = selected.match_type === 'random'
+      && (!line || line.id === (detail?.anchor_line_id || selected.line_id));
+    const active = activeSearch.current;
+    const hash = buildMissionHash({
+      query: readerQuery, filters: isRandomAnchor ? active.filters : emptyFilters, mode: isRandomAnchor ? active.mode : 'text',
+    }, {
+      mission_id: selected.mission_id, line_id: isRandomAnchor ? selected.line_id : line?.id || selected.line_id,
+      script: isRandomAnchor ? selected.script : line?.script || selected.script, snapshot: detail?.snapshot || readerSnapshot,
+    }, isRandomAnchor ? 'random' : 'search');
+    void copy(`${location.origin}${location.pathname}${hash}`);
   }
   const bookmarkKey = selected ? `${selected.mission_id}:${selected.line_id}:${selected.script}` : '';
   const bookmarked = bookmarks.some(b => b.key === bookmarkKey);
   function toggleBookmark() {
     if (!selected) return;
     const result = { ...selected, mission_name: detail?.mission.name || selected.mission_name, chapter: detail?.mission.chapter || selected.chapter };
-    setBookmarks(old => bookmarked ? old.filter(b => b.key !== bookmarkKey) : [{ key: bookmarkKey, result, query: readerQuery, saved_at: new Date().toISOString(), snapshot: detail?.snapshot || response?.snapshot }, ...old]);
+    setBookmarks(old => bookmarked ? old.filter(b => b.key !== bookmarkKey) : [{ key: bookmarkKey, result, query: readerQuery, saved_at: new Date().toISOString(), snapshot: detail?.snapshot || readerSnapshot }, ...old]);
     setToast(bookmarked ? '已取消收藏' : '已收藏到当前浏览器');
   }
   async function saveVersion(version: string, source: string, state: string) {
@@ -800,7 +896,7 @@ export default function App() {
     const p = new URLSearchParams(before
       ? { offset: String(previousOffset), limit: String(currentOffset - previousOffset) }
       : { offset: String(currentOffset + detail.lines.length), limit: '1000' });
-    if (detail.snapshot || response?.snapshot) p.set('snapshot', detail.snapshot || response!.snapshot);
+    if (detail.snapshot || readerSnapshot) p.set('snapshot', detail.snapshot || readerSnapshot);
     const controller = new AbortController();
     readerController.current = controller;
     try { const extra = await request<MissionResponse>(`missions/${encodeURIComponent(selected.mission_id)}?${p}`, { signal: controller.signal }); if (generation === readerId.current) setDetail(old => {
@@ -835,9 +931,35 @@ export default function App() {
     void selectResult(result, response?.snapshot);
   };
 
+  function openBookmark(bookmark: Bookmark) {
+    setShowBookmarks(false);
+    cancelResults();
+    setSearchError('');
+    setRandomError('');
+    if (bookmark.result.match_type === 'random') {
+      openRandomResult(restoredRandomResponse(bookmark.snapshot || '', bookmark.result), bookmark.result, emptyFilters);
+    } else {
+      if (response?.search_mode === 'random') {
+        setResponse(null);
+        setSearchedQuery(bookmark.query);
+        activeSearch.current = { query: bookmark.query, filters, mode };
+      }
+      void selectResult(bookmark.result, bookmark.snapshot, true, bookmark.query);
+    }
+  }
+
+  const randomResponse = response?.search_mode === 'random';
+  const randomButton = (welcome = false) => (
+    <button type="button" className={welcome ? 'text-button random-welcome-button' : 'text-button random-story-link'}
+      disabled={!status.data.ready} aria-busy={randomizing} onClick={() => void runRandom()}>
+      {randomizing ? <span className="spinner" aria-hidden="true" /> : <ShuffleIcon />}
+      {welcome ? '随机邂逅一段剧情' : '随机剧情'}
+    </button>
+  );
+
   return <div className={`app-shell ${selected ? 'has-selection' : ''}`}>
-    <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); searchId.current++; searchController.current?.abort(); setSearching(false); clearReader(); setResponse(null); setQuery(''); setSearchedQuery(''); setFilters(emptyFilters); setMode('text'); activeSearch.current = { filters: emptyFilters, mode: 'text', query: '' }; history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
-      <div className="header-actions">{status.mode === 'server' && <a className="header-button" href="/" aria-label="返回首页" title="返回首页"><span aria-hidden="true">←</span><span>返回首页</span></a>}<span className="connection-label"><span className="status-dot" />{status.mode === 'local' ? '本地档案' : '在线档案'}</span><button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}<button className="header-button theme-toggle" onClick={toggleTheme} aria-label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'} title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button></div>
+    <header className="app-header"><a className="brand" href="#/" onClick={e => { e.preventDefault(); cancelResults(); setSearchError(''); setRandomError(''); clearReader(); setResponse(null); setQuery(''); setSearchedQuery(''); setFilters(emptyFilters); setMode('text'); activeSearch.current = { filters: emptyFilters, mode: 'text', query: '' }; history.replaceState(null, '', '#/'); }}><span className="brand-mark" aria-hidden="true">✦</span><span>星轨档案<small>STARRAIL STORY ARCHIVE</small></span></a>
+      <div className="header-actions">{status.mode === 'server' && <a className="header-button" href="/" aria-label="返回首页" title="返回首页"><span aria-hidden="true">←</span><span>返回首页</span></a>}{status.mode === 'server' ? <a className="connection-label" href="./"><span className="status-dot" />在线档案</a> : <span className="connection-label"><span className="status-dot" />本地档案</span>}<button className="header-button" aria-label="打开收藏" title="收藏" onClick={() => setShowBookmarks(true)}><span aria-hidden="true">☆</span><span>收藏</span>{bookmarks.length > 0 && <small>{bookmarks.length}</small>}</button>{status.mode === 'local' && <button className="header-button" aria-label="管理档案" title="管理" onClick={() => setShowSettings(true)}><span aria-hidden="true">⚙</span><span>管理</span></button>}{status.mode === 'server' && !status.public_readonly && <button className="header-button logout-button" title="退出登录" onClick={() => { void post('auth/logout').then(() => refresh()).catch(err => setToast(errorText(err))); }}><span aria-hidden="true">↪</span><span>退出</span></button>}<button className="header-button theme-toggle" onClick={toggleTheme} aria-label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'} title={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}><span aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span></button></div>
     </header>
     <section className="search-section">
       <form className="search-form" onSubmit={e => { e.preventDefault(); void runSearch(query); }}>
@@ -865,6 +987,7 @@ export default function App() {
             </div>
           </div>
           <button type="button" className="text-button semantic-key-link" onClick={() => setShowVisitorKey(true)}>🔑 语义密钥{visitorKey && <span>已配置</span>}</button>
+          {randomButton()}
           <button type="button" className="text-button feedback-open-link" onClick={() => setShowFeedback(true)}>💬 意见反馈</button>
           <button type="button" className="text-button announcement-open-link" onClick={openAnnouncement}>
             📢 公告{unreadAnnouncement && <span className="announcement-dot" aria-label="有未读更新" />}
@@ -880,12 +1003,18 @@ export default function App() {
           </div>
         </div>
       </div>
+      {randomError && <p className="inline-alert random-alert" role="alert">{randomError}</p>}
     </section>
-    <main className="workspace"><section className="results-panel" aria-label="搜索结果"><div className="results-heading"><h2>{response ? response.search_mode === 'fuzzy' ? '错字容错结果' : response.search_mode === 'hybrid' ? '描述找剧情结果' : '精准关键词结果' : '剧情检索'}</h2>{response ? <span>{response.truncated ? '优先展示 ' : ''}{formatNumber(response.total)} 条相关结果{response.elapsed_ms != null && <small> · {(response.elapsed_ms / 1000).toFixed(2)} 秒</small>}</span> : <span>{formatNumber(status.data.stats?.narrative_lines ?? status.data.stats?.lines)} 条对白记录</span>}</div>
-      <div className="results-scroll" aria-busy={searching} aria-live="polite">
+    <main className="workspace"><section className="results-panel" aria-label={randomResponse ? '随机剧情结果' : '搜索结果'}><div className="results-heading"><h2>{randomResponse ? '随机剧情' : response ? response.search_mode === 'fuzzy' ? '错字容错结果' : response.search_mode === 'hybrid' ? '描述找剧情结果' : '精准关键词结果' : '剧情检索'}</h2>{randomResponse ? <span>{response.total ? '1 条随机对白' : ''}</span> : response ? <span>{response.truncated ? '优先展示 ' : ''}{formatNumber(response.total)} 条相关结果{response.elapsed_ms != null && <small> · {(response.elapsed_ms / 1000).toFixed(2)} 秒</small>}</span> : <span>{formatNumber(status.data.stats?.narrative_lines ?? status.data.stats?.lines)} 条对白记录</span>}</div>
+      <div className="results-scroll" aria-busy={Boolean(pending) || (randomResponse && reading && !response.total)} aria-live="polite">
         {searchError && <div className="inline-alert" role="alert">{searchError}</div>}
         {response?.notice && <div className="search-notice">{response.notice}</div>}
-        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{(mode === 'hybrid' ? ['流萤带开拓者逛游乐园', '丹恒与景元在幽囚狱交谈', '卡芙卡在空间站唤醒开拓者'] : ['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨']).map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div></div> : (response.results.length === 0 && !response.matched_missions?.length) ? <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty> : <div className="result-list">{Boolean(response.matched_missions?.length) && <div className="matched-missions" aria-label="同名任务直达"><span className="matched-missions-title">同名任务直达</span>{response.matched_missions!.map(item => {
+        {!status.data.ready ? <Empty title="准备你的第一份档案"><p>导入剧情数据后，就可以搜索台词和阅读上下文。</p>{status.admin && <button className="secondary" onClick={() => setShowSettings(true)}>导入数据 →</button>}</Empty> : !response ? <div className="search-welcome"><div className="welcome-orbit" aria-hidden="true"><span>✧</span></div><h2>从你记得的地方开始</h2><p>一句台词、一个名字，<br />或某次旅途里的模糊记忆。</p><div className="suggestions"><span>试着搜索</span>{(mode === 'hybrid' ? ['流萤带开拓者逛游乐园', '丹恒与景元在幽囚狱交谈', '卡芙卡在空间站唤醒开拓者'] : ['生命因何而沉睡', '三月七 星穹列车', '流萤', '老杨']).map(value => <button key={value} onClick={() => { setQuery(value); void runSearch(value); }}>{value}<span>↗</span></button>)}</div>
+          <div className="random-welcome"><p>不知道今天做什么？暂时没有想找的剧情?</p>{randomButton(true)}</div>
+        </div> : (response.results.length === 0 && !response.matched_missions?.length) ? randomResponse
+          ? <Empty title={reading ? '正在打开随机剧情…' : '暂时无法恢复这条随机对白'}><p>{readerError || (!reading && '可以点击「随机剧情」再抽一条。')}</p></Empty>
+          : <Empty title="还没有找到相关剧情"><p>尝试缩短台词、使用角色名，或减少筛选条件。</p></Empty>
+        : <div className="result-list">{Boolean(response.matched_missions?.length) && <div className="matched-missions" aria-label="同名任务直达"><span className="matched-missions-title">同名任务直达</span>{response.matched_missions!.map(item => {
           const title = cleanMissionName(item.mission_name, item.chapter, item.world);
           const isSelected = selected?.mission_id === item.mission_id && !selected?.line_id;
           return <button key={`mm:${item.mission_id}`} type="button" className={`mission-shortcut-card ${isSelected ? 'selected' : ''}`} onClick={() => openMissionShortcut(item)}>
@@ -912,13 +1041,15 @@ export default function App() {
             <span className={origin || !result.version ? 'pending-version' : 'version-tag'}>{origin ? '对白版本待核实' : versionText(result.version, result.version_status)}</span>
           </div>
           <h3>{title}{!origin && result.chapter && result.chapter !== title && <small className="result-chapter"> · {result.chapter}</small>}</h3>
-          <p className="result-text"><strong>{result.kind?.includes("option") ? "❖ 开拓者选项" : speakerName(result.speaker)}</strong><span><Highlight text={result.display_text || result.text} query={searchedQuery} /></span></p>
+          <p className="result-text"><strong>{result.kind?.includes("option") ? "❖ 开拓者选项" : speakerName(result.speaker)}</strong><span><Highlight text={result.display_text || result.text} query={randomResponse ? '' : searchedQuery} /></span></p>
           {origin && <p className="result-origins">多个出处 · {origin.origins.map(item => item.name).join(' / ')}</p>}
           <div className="result-bottom"><span>{matchLabel(result)}</span><span className="result-open">阅读上下文 <span>→</span></span></div>
         </button>; })}{response.results.length < response.total && <button className="secondary load-results" disabled={searching} onClick={() => void runSearch(searchedQuery, response.results.length)}>{searching ? '加载中…' : '加载更多结果'}</button>}</div>}
       </div><footer className="results-footer"><a href="https://github.com/JahsehXL/hsr-story-search" target="_blank" rel="noreferrer">GitHub 仓库 ↗</a></footer>
     </section>
     <Reader selected={selected} detail={detail} busy={reading} query={readerQuery} error={readerError} isAdmin={status.admin} bookmarked={bookmarked} onBookmark={toggleBookmark} onCopy={text => void copy(text)} onShare={share} onBack={closeReader} onVersionSave={saveVersion}
+      onRetry={selected?.match_type === 'random' && readerError
+        ? () => void selectResult(selected, readerSnapshot, false, '', !response?.results.length) : undefined}
       onOpenCurrentForVersion={selected && status.data.snapshot && detail?.snapshot && detail.snapshot !== status.data.snapshot
         ? () => void selectResult(selected, status.data.snapshot, true, readerQuery) : undefined}
       onMore={() => void moreContext()} onEarlier={() => void moreContext(true)} />
@@ -968,8 +1099,8 @@ export default function App() {
           text: selected?.display_text || selected?.text || '',
           script: selected?.script || '',
           branch: selected?.branch || '',
-          query: (selected ? readerQuery : searchedQuery) || query.trim(),
-          mode,
+          query: selected?.match_type === 'random' ? '' : (selected ? readerQuery : searchedQuery) || query.trim(),
+          mode: selected?.match_type === 'random' ? 'random' : mode,
         } : null}
         onSuccess={() => {
           setShowFeedback(false);
@@ -1017,7 +1148,7 @@ export default function App() {
     })()}
     {showAdminLogin && <Modal title="管理员登录" close={() => setShowAdminLogin(false)}><Login admin onSuccess={() => { void refresh().then(() => { setShowAdminLogin(false); setShowSettings(true); }); }} /></Modal>}
     {showSettings && <Modal title="档案管理" close={() => setShowSettings(false)} wide><Suspense fallback={<p role="status">正在加载管理工具…</p>}><Admin status={status} onRefresh={() => refresh()} onToast={setToast} onAnnouncementSaved={next => setAnnouncement(normalizeAnnouncement(next))} /></Suspense></Modal>}
-    {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => { setShowBookmarks(false); void selectResult(bookmark.result, bookmark.snapshot, true, bookmark.query); }}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{displayText(bookmark.result.display_text || bookmark.result.text) || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
+    {showBookmarks && <Modal title="收藏的剧情" close={() => setShowBookmarks(false)}><div className="bookmark-modal"><div className="bookmark-info"><p>保存在当前浏览器，可导出备份。</p><button className="text-button" disabled={!bookmarks.length} onClick={() => downloadJson('星轨档案-收藏.json', bookmarks)}>导出收藏 ↗</button></div>{bookmarks.length ? bookmarks.map(bookmark => <div className="bookmark-row" key={bookmark.key}><button onClick={() => openBookmark(bookmark)}><h3>{cleanMissionName(bookmark.result.mission_name, bookmark.result.chapter, bookmark.result.world)}</h3><p>{displayText(bookmark.result.display_text || bookmark.result.text) || '打开收藏位置'}</p><small>{bookmark.result.chapter}</small></button><button className="icon-button" onClick={() => setBookmarks(old => old.filter(b => b.key !== bookmark.key))} aria-label="移除收藏" title="移除收藏">×</button></div>) : <Empty symbol="☆" title="还没有收藏"><p>阅读剧情时，点击标题旁的星标即可收藏。</p></Empty>}</div></Modal>}
     {toast && <div className="toast" role="status">{toast}</div>}
   </div>;
 }

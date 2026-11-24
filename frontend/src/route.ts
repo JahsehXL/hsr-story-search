@@ -30,7 +30,7 @@ export function parseRoute(hash: string): ParsedRoute {
   const mode: SearchMode = VALID_MODES.has(rawMode as SearchMode) ? (rawMode as SearchMode) : 'text';
   return {
     path,
-    query: params.get('q') || '',
+    query: path === '/random' ? '' : params.get('q') || '',
     filters: {
       world: params.get('world') || '',
       version: params.get('version') || '',
@@ -68,11 +68,12 @@ export function buildSearchHash(criteria: SearchCriteria): string {
 export function buildMissionHash(
   criteria: SearchCriteria,
   selection: { mission_id: string; line_id?: string; script?: string; snapshot?: string },
+  view: 'search' | 'random' = 'search',
 ): string {
-  const params = criteriaParams(criteria);
+  const params = criteriaParams(view === 'random' ? { ...criteria, query: '' } : criteria);
   if (selection.mission_id) params.set('mission', selection.mission_id);
   if (selection.line_id) params.set('line', selection.line_id);
   if (selection.script) params.set('script', selection.script);
   if (selection.snapshot) params.set('snapshot', selection.snapshot);
-  return `#/search?${params.toString()}`;
+  return `#/${view}?${params.toString()}`;
 }
